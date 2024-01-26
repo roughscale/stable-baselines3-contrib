@@ -165,7 +165,7 @@ class DRQNetwork(BasePolicy):
         return self.q_net(self.extract_features(obs, self.features_extractor), lstm_states)
 
     def _predict(self, observation: th.Tensor, last_lstm_states: Tuple[th.Tensor],  deterministic: bool = True) -> th.Tensor:
-        print("drqn _predict")
+        #print("drqn _predict")
         q_values, lstm_states = self(observation, last_lstm_states)
         # Greedy action
         #print(q_values)
@@ -256,8 +256,8 @@ class DRQNPolicy(BasePolicy):
         self.q_net_target.load_state_dict(self.q_net.state_dict())
         self.q_net_target.set_training_mode(False)
 
-        print("network parameters")
-        print(list(self.parameters()))
+        #print("network parameters")
+        #print(list(self.parameters()))
 
         # Setup optimizer with initial learning rate
         self.optimizer = self.optimizer_class(  # type: ignore[call-arg]

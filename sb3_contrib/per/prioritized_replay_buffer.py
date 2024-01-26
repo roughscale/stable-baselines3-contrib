@@ -221,5 +221,19 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             next_obs,
             self.dones[sample_idxs],
             self.rewards[sample_idxs],
+            weights,
+            sample_idxs
         )
         return ReplayBufferSamples(*tuple(map(self.to_torch, batch)))  # type: ignore
+        #return PrioritizedReplayBufferSamples(*tuple(map(self.to_torch, batch)))  # type: ignore
+
+    def update_priorities(self, sample_idxs, priorities):
+
+        for data_idx, priority in zip(sample_idxs, priorities):
+            # The first variant we consider is the direct, proportional prioritization where p_i = |δ_i| + eps,
+            # where eps is a small positive constant that prevents the edge-case of transitions not being
+            # revisited once their error is zero. (Section 3.3)
+            priority = (priority + self.eps) ** self.alpha
+
+            self.tree.update(data_idx, priority)
+            self.max_priority = max(self.max_priority, priority)

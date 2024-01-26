@@ -240,20 +240,20 @@ class PrioritizedReplaySequenceBuffer(PrioritizedReplayBuffer):
 
         return replay_buffer_sequence_samples
 
-    def prioritised_sample(self, batch_size: int, env: Optional[VecNormalize] = None) -> ReplayBufferSamples:
+    #def prioritised_sample(self, batch_size: int, env: Optional[VecNormalize] = None) -> ReplayBufferSamples:
+    def prioritised_sample(self, batch_size: int = 32, seq: int = 10, env: Optional[VecNormalize] = None) -> ReplayBufferSamples:
+
         """
         Sample episode transitions from the replay buffer.
 
-        :param batch_size: Number of element to sample. Not used. We only return 1 episode.
+        :param batch_size: Number of sequences to sample.
+        :param seq_size: Number of transitions to return in the sequence per batch
         :param env: Associated VecEnv to normalize the observations/rewards when sampling
         :return: Samples
         """
         sampled_indices, tree_idxs = [], []
         priorities = th.empty(batch_size, 1, dtype=th.float)
 
-        # NOTE: We select 1 transition from the prioritised tree and return the episodic transitions
-        # therefore:
-        batch_size = 1
         # To sample a minibatch of size k, the range [0, p_total] is divided equally into k ranges.
         # Next, a value is uniformly sampled from each range. Finally the transitions that correspond
         # to each of these sampled values are retrieved from the tree.
@@ -262,7 +262,7 @@ class PrioritizedReplaySequenceBuffer(PrioritizedReplayBuffer):
             # extremes of the current segment
             a, b = segment * i, segment * (i + 1)
 
-            # uniformely sample a value from the current segment
+            # uniformly sample a value from the current segment
             cumsum = random.uniform(a, b)
 
             # tree_idx is a index of a sample in the tree, needed further to update priorities
@@ -292,8 +292,8 @@ class PrioritizedReplaySequenceBuffer(PrioritizedReplayBuffer):
 
         # now we need to return the episodes that correspond to these indices.
         # get the episode_start and episode_lengths for these indices
-
-        episode_starts = self.ep_start[sampled_indices, env_indices]  # this should return a batch_size array of start pos
+        # we need to return previous seq_size indices to the selected sampled_indices
+        episode_starts = self.ep_end[sampled_indices, env_indices]  # this should return a batch_size array of end positions
         episode_lengths = self.ep_length[sampled_indices, env_indices] # this should return a batch_size array of lengths
         episode_ends = episode_starts + episode_lengths
 
