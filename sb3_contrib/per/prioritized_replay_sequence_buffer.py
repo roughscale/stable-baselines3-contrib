@@ -77,6 +77,7 @@ class PrioritizedReplaySequenceBuffer(PrioritizedReplayBuffer):
         :param infos: Eventual information given by the environment.
         """
         # store transition index with maximum priority in sum tree
+        # self.count should be self.pos??
         self.tree.add(self.max_priority, self.count)
 
         # from HER
@@ -93,6 +94,7 @@ class PrioritizedReplaySequenceBuffer(PrioritizedReplayBuffer):
                 self.ep_length[episode_indices, env_idx] = 0
 
         ## NOTE: We will also want to update the priorities of these deleted transitions
+        ## ie, update the deleted tree indices with the max_priority
 
         # Update episode start
         self.ep_start[self.pos] = self._current_ep_start.copy()
@@ -107,6 +109,8 @@ class PrioritizedReplaySequenceBuffer(PrioritizedReplayBuffer):
             if done[env_idx]:
                 self._compute_episode_length(env_idx)
 
+    # the following is an overridden version of the inherited add() method
+    # frome the ReplayBuffer parent
     def _add(
         self,
         obs: np.ndarray,
@@ -168,6 +172,7 @@ class PrioritizedReplaySequenceBuffer(PrioritizedReplayBuffer):
         # Update the current episode start
         self._current_ep_start[env_idx] = self.pos
 
+    # adapted from HER
     def sample(self, batch_size: int, env: Optional[VecNormalize] = None) -> ReplayBufferSamples:
         """
         Sample elements from the replay buffer.
@@ -195,7 +200,7 @@ class PrioritizedReplaySequenceBuffer(PrioritizedReplayBuffer):
         valid_indices = np.flatnonzero(is_valid)
         # Sample valid transitions that will constitute the minibatch of size batch_size
         # we only return 1 episode
-        batch_size=1
+        #batch_size=1
         sampled_indices = np.random.choice(valid_indices, size=batch_size, replace=True)
         # Unravel the indexes, i.e. recover the batch and env indices.
         # Example: if sampled_indices = [0, 3, 5], then batch_indices = [0, 1, 1] and env_indices = [0, 0, 2]
@@ -208,29 +213,39 @@ class PrioritizedReplaySequenceBuffer(PrioritizedReplayBuffer):
         episode_lengths = self.ep_length[batch_indices, env_indices] # this should return a batch_size array of lengths
         episode_ends = episode_starts + episode_lengths
 
+        # now we want to return N-10 steps from the batch index
+        seq_start = np.array([(batch_indices - 10) % self.buffer_size, env_indices])
+
+        # ensure seq_starts isn't before episodes start
+        seq_starts = np.maximum(seq_start,episodes_starts) # this should return shapt [batch_indices, env_indices]
+
         # debug
-        #print(episode_starts)
+        print(seq_starts)
+        print(episode_starts)
         #print(episode_lengths)
         #print(episode_ends)
 
         # need to generate a List of ReplayBufferSamples (tuple of tensors)
         replay_buffer_sequence_samples = []
 
-        # we only return 1 random episode
         for ep in range(batch_size):
 
-           sample_idxs = np.arange(episode_starts[ep],episode_ends[ep]) % self.buffer_size
+           # the following returns the entire episode
+           #sample_idxs = np.arange(episode_starts[ep],episode_ends[ep]) % self.buffer_size
+           #
+           # now we only want to return N-10 steps in the episode from the select index
+           sample_idxs = np.arange(seq_starts[ep],batch_indices[ep]) % self.buffer_size
 
            if self.optimize_memory_usage:
                next_obs = self._normalize_obs(
-                   self.observations[(np.array(sample_idxs) + 1) % self.buffer_size, 0, :], env
+                   self.observations[(np.array(sample_idxs) + 1) % self.buffer_size, env_indices[ep], :], env
                )
            else:
-               next_obs = self._normalize_obs(self.next_observations[sample_idxs, 0, :], env)
+               next_obs = self._normalize_obs(self.next_observations[sample_idxs, env_indices[ep], :], env)
 
            batch = (
-               self._normalize_obs(self.observations[sample_idxs, 0, :], env),
-               self.actions[sample_idxs, 0, :],
+               self._normalize_obs(self.observations[sample_idxs, env_indices[ep], :], env),
+               self.actions[sample_idxs, env_indices[ep], :],
                next_obs,
                self.dones[sample_idxs],
                self.rewards[sample_idxs],

@@ -206,7 +206,14 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         weights = (self.real_size * probs) ** -self.beta
         weights = weights / weights.max()
 
-        env_indices = np.random.randint(0, high=self.n_envs, size=(len(sample_idxs),))
+        # is SumTree multi-env aware??  how does the sum tree provide weighted indices from different envs?
+        # each leaf node in the SumTree is the buffer position index which has different values per env and
+        # most likely different td_errors which produce different weights
+        # what shape is sample_idxs?? Seems it is a list of ints of size batch_size (ie batch_size * 1)
+
+        # comment out the following as it won't work if self.n_envs > 1
+        # env_indices = np.random.randint(0, high=self.n_envs, size=(len(sample_idxs),))
+        env_indices = np.random.randint(0, high=1, size=(len(sample_idxs),))
 
         if self.optimize_memory_usage:
             next_obs = self._normalize_obs(
