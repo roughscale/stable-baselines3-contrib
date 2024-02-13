@@ -188,8 +188,7 @@ class DeepRecurrentQNetwork(DQN):
             # look at LSTM packed sequences of variable length
             # iterating over 32 batches of large sequences takes a very long time
             # 
-            #for batch in range(batch_size):
-            for batch in range(1):
+            for batch in range(batch_size):
                 # just take first batch for the moment
                 replay_data = replay_seq_data[batch]
                 #print(replay_data.dones)
@@ -203,8 +202,8 @@ class DeepRecurrentQNetwork(DQN):
                     # Compute the next Q-values using the target network
                     # DQN uses these as a batch input of independent transitions
                     # We need to use it as one input sequence of transitions.
-                    print(len(replay_data.next_observations))
-                    print("forward pass of q_net_target with None as h0,c0")
+                    #print(len(replay_data.next_observations))
+                    #print("forward pass of q_net_target with None as h0,c0")
                     next_q_values, _ = self.q_net_target(replay_data.next_observations)
                     # Follow greedy policy: use the one with the highest value
                     # If the sequenced replay data is batched as (seq, batch, features)
@@ -216,8 +215,8 @@ class DeepRecurrentQNetwork(DQN):
                     target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
 
                 # Get current Q-values estimates
-                print(len(replay_data.observations))
-                print("forward pass of q_net with None as h0,c0")
+                #print(len(replay_data.observations))
+                #print("forward pass of q_net with None as h0,c0")
                 current_q_values, _ = self.q_net(replay_data.observations)
 
                 # Retrieve the q-values for the actions from the replay buffer
@@ -233,8 +232,8 @@ class DeepRecurrentQNetwork(DQN):
                 # perhaps use with th.no_grad() when printing the following to avoid backprop interaction
                 #print(F.smooth_l1_loss(current_q_values, target_q_values, reduction="none"))
                 loss = F.smooth_l1_loss(current_q_values, target_q_values, reduction="mean")
-                print("loss")
-                print(loss)
+                #print("loss")
+                #print(loss)
                 losses.append(loss.item())
 
                 # Optimize the policy

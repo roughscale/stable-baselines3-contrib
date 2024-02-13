@@ -181,6 +181,9 @@ class PrioritizedReplaySequenceBuffer(PrioritizedReplayBuffer):
         :param env: Associated VecEnv to normalize the observations/rewards when sampling
         :return: Samples
         """
+        # number of previous transitions in sequence to return
+        n_prev_trans = 10
+
         # When the buffer is full, we rewrite on old episodes. We don't want to
         # sample incomplete episode transitions, so we have to eliminate some indexes.
         is_valid = self.ep_length > 0
@@ -214,14 +217,14 @@ class PrioritizedReplaySequenceBuffer(PrioritizedReplayBuffer):
         episode_ends = episode_starts + episode_lengths
 
         # now we want to return N-10 steps from the batch index
-        seq_start = np.array([(batch_indices - 10) % self.buffer_size, env_indices])
+        seq_start = np.array([(batch_indices - n_prev_trans), env_indices])
 
-        # ensure seq_starts isn't before episodes start
-        seq_starts = np.maximum(seq_start,episodes_starts) # this should return shapt [batch_indices, env_indices]
+        # ensure seq_starts isn't before episodes start. use first dim of seq_start
+        seq_starts = np.maximum(seq_start[0],episode_starts) # this should return shapt [batch_indices, env_indices]
 
         # debug
-        print(seq_starts)
-        print(episode_starts)
+        #print(seq_starts)
+        #print(episode_starts)
         #print(episode_lengths)
         #print(episode_ends)
 
@@ -235,6 +238,9 @@ class PrioritizedReplaySequenceBuffer(PrioritizedReplayBuffer):
            #
            # now we only want to return N-10 steps in the episode from the select index
            sample_idxs = np.arange(seq_starts[ep],batch_indices[ep]) % self.buffer_size
+           # edge case if sample index 0 is selected with episode starting at same position
+           if len(sample_idxs) == 0:
+               sample_idxs = np.array([batch_indices[ep]])
 
            if self.optimize_memory_usage:
                next_obs = self._normalize_obs(
