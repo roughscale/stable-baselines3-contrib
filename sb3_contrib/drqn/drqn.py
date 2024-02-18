@@ -176,6 +176,7 @@ class DeepRecurrentQNetwork(DQN):
         self._update_learning_rate(self.policy.optimizer)
 
         losses = []
+        batch_size = 1
         for _ in range(gradient_steps):
             # Sample replay buffer
             # return sequence lengths within the 1-d replay data vector

@@ -11,15 +11,15 @@ import numpy as np
 import torch as th
 from gymnasium import spaces
 
-from sb3_contrib.per.prioritized_replay_buffer import PrioritizedReplayBuffer
+from stable_baselines3.common.replay_buffer import ReplayBuffer
 from sb3_contrib.common.recurrent.type_aliases import RNNStates
 
 from stable_baselines3.common.type_aliases import ReplayBufferSamples
 from stable_baselines3.common.vec_env.vec_normalize import VecNormalize
 
-class PrioritizedReplaySequenceBuffer(PrioritizedReplayBuffer):
+class ReplaySequenceBuffer(ReplayBuffer):
     """
-    This provides a Prioritized Replay Buffer that returns episodic sequences of transitions.
+    This provides a Replay Buffer that returns episodic sequences of transitions.
 
     :param buffer_size: Max number of element in the buffer
     :param observation_space: Observation space
@@ -37,11 +37,9 @@ class PrioritizedReplaySequenceBuffer(PrioritizedReplayBuffer):
         action_space: spaces.Space,
         device: Union[th.device, str] = "auto",
         n_envs: int = 1,
-        alpha: float = 0.6,
-        beta: float = 0.4,
         optimize_memory_usage: bool = False,
     ):
-        super().__init__(buffer_size, observation_space, action_space, device, n_envs, alpha, beta, optimize_memory_usage)
+        super().__init__(buffer_size, observation_space, action_space, device, n_envs, optimize_memory_usage)
 
         # Episodic params from HER
         self.ep_start = np.zeros((self.buffer_size, self.n_envs), dtype=np.int64)
@@ -231,6 +229,7 @@ class PrioritizedReplaySequenceBuffer(PrioritizedReplayBuffer):
         # need to generate a List of ReplayBufferSamples (tuple of tensors)
         replay_buffer_sequence_samples = []
 
+        batch_size=1
         for ep in range(batch_size):
 
            # the following returns the entire episode
@@ -252,94 +251,6 @@ class PrioritizedReplaySequenceBuffer(PrioritizedReplayBuffer):
            batch = (
                self._normalize_obs(self.observations[sample_idxs, env_indices[ep], :], env),
                self.actions[sample_idxs, env_indices[ep], :],
-               next_obs,
-               self.dones[sample_idxs],
-               self.rewards[sample_idxs],
-           )
-
-           replay_buffer_sequence_samples.append(ReplayBufferSamples(*tuple(map(self.to_torch, batch))))  # type: ignore
-
-        return replay_buffer_sequence_samples
-
-    #def prioritised_sample(self, batch_size: int, env: Optional[VecNormalize] = None) -> ReplayBufferSamples:
-    def prioritised_sample(self, batch_size: int = 32, seq: int = 10, env: Optional[VecNormalize] = None) -> ReplayBufferSamples:
-
-        """
-        Sample episode transitions from the replay buffer.
-
-        :param batch_size: Number of sequences to sample.
-        :param seq_size: Number of transitions to return in the sequence per batch
-        :param env: Associated VecEnv to normalize the observations/rewards when sampling
-        :return: Samples
-        """
-        sampled_indices, tree_idxs = [], []
-        priorities = th.empty(batch_size, 1, dtype=th.float)
-
-        # To sample a minibatch of size k, the range [0, p_total] is divided equally into k ranges.
-        # Next, a value is uniformly sampled from each range. Finally the transitions that correspond
-        # to each of these sampled values are retrieved from the tree.
-        segment = self.tree.p_total / batch_size
-        for i in range(batch_size):
-            # extremes of the current segment
-            a, b = segment * i, segment * (i + 1)
-
-            # uniformly sample a value from the current segment
-            cumsum = random.uniform(a, b)
-
-            # tree_idx is a index of a sample in the tree, needed further to update priorities
-            # sample_idx is a sample index in buffer, needed further to sample actual transitions
-            tree_idx, priority, sample_idx = self.tree.get(cumsum)
-
-            priorities[i] = priority
-            tree_idxs.append(tree_idx)
-            sampled_indices.append(int(sample_idx.item()))
-
-        print(sampled_indices)
-        # NOTE: The following has not been properly implemented upstream
-        # we should be returning the weights with the samples so that the priorities
-        # of those transitions once replayed can be updated in the tree
-        #
-        # probability of sampling transition i as P(i) = p_i^alpha / \sum_{k} p_k^alpha
-        # where p_i > 0 is the priority of transition i.
-        probs = priorities / self.tree.p_total
-
-        # Importance sampling weights.
-        # All weights w_i were scaled so that max_i w_i = 1.
-        weights = (self.real_size * probs) ** -self.beta
-        weights = weights / weights.max()
-
-        # not sure why we choose a random env_index?
-        env_indices = np.random.randint(0, high=self.n_envs, size=(len(sampled_indices),))
-
-        # now we need to return the episodes that correspond to these indices.
-        # get the episode_start and episode_lengths for these indices
-        # we need to return previous seq_size indices to the selected sampled_indices
-        episode_starts = self.ep_end[sampled_indices, env_indices]  # this should return a batch_size array of end positions
-        episode_lengths = self.ep_length[sampled_indices, env_indices] # this should return a batch_size array of lengths
-        episode_ends = episode_starts + episode_lengths
-
-        # debug
-        #print(episode_starts)
-        #print(episode_lengths)
-        #print(episode_ends)
-
-        # need to generate a List of ReplayBufferSamples (tuple of tensors)
-        replay_buffer_sequence_samples = []
-        for ep in range(batch_size):
-
-           sample_idxs = np.arange(episode_starts[ep],episode_ends[ep]) % self.buffer_size
-
-           if self.optimize_memory_usage:
-               next_obs = self._normalize_obs(
-                   self.observations[(np.array(sample_idxs) + 1) % self.buffer_size, 0, :], env
-               )
-           else:
-               next_obs = self._normalize_obs(self.next_observations[sample_idxs, 0, :], env)
-
-           # The following (idx,0,:) notation is ours.  quick fix as we only have 1 n_env.
-           batch = (
-               self._normalize_obs(self.observations[sample_idxs, 0, :], env),
-               self.actions[sample_idxs, 0, :],
                next_obs,
                self.dones[sample_idxs],
                self.rewards[sample_idxs],
