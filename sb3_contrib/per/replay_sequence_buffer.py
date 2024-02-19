@@ -74,10 +74,6 @@ class ReplaySequenceBuffer(ReplayBuffer):
         :param done: Whether the episode was finished after the transition to be stored.
         :param infos: Eventual information given by the environment.
         """
-        # store transition index with maximum priority in sum tree
-        # self.count should be self.pos??
-        self.tree.add(self.max_priority, self.count)
-
         # from HER
         # When the buffer is full, we rewrite on old episodes. When we start to
         # rewrite on an old episodes, we want the whole old episode to be deleted
@@ -200,8 +196,6 @@ class ReplaySequenceBuffer(ReplayBuffer):
         # Those indices are obtained back using np.unravel_index(valid_indices, is_valid.shape)
         valid_indices = np.flatnonzero(is_valid)
         # Sample valid transitions that will constitute the minibatch of size batch_size
-        # we only return 1 episode
-        #batch_size=1
         sampled_indices = np.random.choice(valid_indices, size=batch_size, replace=True)
         # Unravel the indexes, i.e. recover the batch and env indices.
         # Example: if sampled_indices = [0, 3, 5], then batch_indices = [0, 1, 1] and env_indices = [0, 0, 2]
@@ -214,11 +208,13 @@ class ReplaySequenceBuffer(ReplayBuffer):
         episode_lengths = self.ep_length[batch_indices, env_indices] # this should return a batch_size array of lengths
         episode_ends = episode_starts + episode_lengths
 
+        # temporarily disable whilst we return full episode
         # now we want to return N-10 steps from the batch index
-        seq_start = np.array([(batch_indices - n_prev_trans), env_indices])
+        #seq_start = np.array([(batch_indices - n_prev_trans), env_indices])
 
+        # temporarily disable whilst we return full episode
         # ensure seq_starts isn't before episodes start. use first dim of seq_start
-        seq_starts = np.maximum(seq_start[0],episode_starts) # this should return shapt [batch_indices, env_indices]
+        #seq_starts = np.maximum(seq_start[0],episode_starts) # this should return shapt [batch_indices, env_indices]
 
         # debug
         #print(seq_starts)
@@ -229,14 +225,13 @@ class ReplaySequenceBuffer(ReplayBuffer):
         # need to generate a List of ReplayBufferSamples (tuple of tensors)
         replay_buffer_sequence_samples = []
 
-        batch_size=1
         for ep in range(batch_size):
 
            # the following returns the entire episode
-           #sample_idxs = np.arange(episode_starts[ep],episode_ends[ep]) % self.buffer_size
+           sample_idxs = np.arange(episode_starts[ep],episode_ends[ep]) % self.buffer_size
            #
            # now we only want to return N-10 steps in the episode from the select index
-           sample_idxs = np.arange(seq_starts[ep],batch_indices[ep]) % self.buffer_size
+           #sample_idxs = np.arange(seq_starts[ep],batch_indices[ep]) % self.buffer_size
            # edge case if sample index 0 is selected with episode starting at same position
            if len(sample_idxs) == 0:
                sample_idxs = np.array([batch_indices[ep]])

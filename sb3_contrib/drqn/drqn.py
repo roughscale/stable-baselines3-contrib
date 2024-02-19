@@ -196,7 +196,7 @@ class DeepRecurrentQNetwork(DQN):
                 #print("replay_data")
                 #print(type(replay_data))
                 # print shape of the next_observations (one of the tuples)
-                #print(replay_data.next_observations.shape)
+                print(replay_data.next_observations.shape)
              
                 # what is the effect of th.no_grad if the sequence needs to keep gradient?
                 with th.no_grad():
@@ -204,8 +204,9 @@ class DeepRecurrentQNetwork(DQN):
                     # DQN uses these as a batch input of independent transitions
                     # We need to use it as one input sequence of transitions.
                     #print(len(replay_data.next_observations))
-                    #print("forward pass of q_net_target with None as h0,c0")
+                    print("forward pass of q_net_target with None as h0,c0")
                     next_q_values, _ = self.q_net_target(replay_data.next_observations)
+                    print(next_q_values.shape)
                     # Follow greedy policy: use the one with the highest value
                     # If the sequenced replay data is batched as (seq, batch, features)
                     # then dim=2
@@ -217,8 +218,9 @@ class DeepRecurrentQNetwork(DQN):
 
                 # Get current Q-values estimates
                 #print(len(replay_data.observations))
-                #print("forward pass of q_net with None as h0,c0")
+                print("forward pass of q_net with None as h0,c0")
                 current_q_values, _ = self.q_net(replay_data.observations)
+                print(current_q_values.shape)
 
                 # Retrieve the q-values for the actions from the replay buffer
                 current_q_values = th.gather(current_q_values, dim=1, index=replay_data.actions.long())
