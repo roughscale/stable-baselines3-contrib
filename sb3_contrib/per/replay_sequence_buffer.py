@@ -11,7 +11,7 @@ import numpy as np
 import torch as th
 from gymnasium import spaces
 
-from stable_baselines3.common.replay_buffer import ReplayBuffer
+from stable_baselines3.common.buffers import ReplayBuffer
 from sb3_contrib.common.recurrent.type_aliases import RNNStates
 
 from stable_baselines3.common.type_aliases import ReplayBufferSamples
