@@ -65,11 +65,13 @@ class DRQNModule(nn.Module):
     :param linear_layer: Linear module
     """
 
-    def __init__(self, lstm_layers: nn.Module, activation_fn: nn.Module, linear_layer: nn.Module) -> None:
+    def __init__(self, lstm_layers: nn.Module, activation_fn: nn.Module, linear_layers: nn.Module) -> None:
         super().__init__()
+        # this architecture requires an LSTM module to generate the history of obserations
+        # then an MLP to approximate the Q values using the LSTM output as the input
         self.lstm_layers = lstm_layers
         self.activation_fn = activation_fn
-        self.linear_layer = linear_layer
+        self.linear_layers = linear_layers
 
     def forward(self, features: th.Tensor, lstm_states: Tuple[th.Tensor]) -> th.Tensor:
         #print(features) # this seems to be different to obs??
@@ -84,9 +86,10 @@ class DRQNModule(nn.Module):
         #print(lstm_out.shape)
         #print("lstm hn")
         #print(hn)
-        # activation function between lstm and linear layer
-        linear_in = self.activation_fn()(lstm_out)
-        output = self.linear_layer(linear_in)
+        # don't put activation function between lstm and linear layer
+        #linear_in = self.activation_fn()(lstm_out)
+        #output = self.linear_layer(linear_in)
+        output = self.linear_layers(lstm_out)
         #print(output)
         #print("output shape")
         #print(output.shape) # this is of size [ episode_length, action_dim]
@@ -137,10 +140,18 @@ class DRQNetwork(BasePolicy):
         action_dim = int(self.action_space.n)  # number of actions
         # for multilayer LSTMs will need to implement something like the create_mlp function
         lstm_layers = nn.LSTM(self.features_dim, lstm_hidden_size, lstm_num_layers)
-        linear_layer = nn.Linear(lstm_hidden_size, action_dim)
+        #linear_layer = nn.Linear(lstm_hidden_size, action_dim)
+        linear_layers = nn.Sequential(
+                [
+                nn.Linear(lstm_hidden_size,lstm_hidden_size),
+                self.activation_fn,
+                nn.Linear(lsmt_hidden_size,action_dim)
+                ]
+        )
         #lstm_layers = DRQNLSTM(self.features_dim, lstm_dim, lstm_num_layers)
         #linear_layer = DRQNLinear(lstm_dim, action_dim)
-        self.q_net = DRQNModule(lstm_layers, activation_fn, linear_layer)
+        #self.q_net = DRQNModule(lstm_layers, activation_fn, linear_layer)
+        self.q_net = DRQNModule(lstm_layers, activation_fn, linear_layers)
 
     def forward(self, obs: th.Tensor, lstm_states: th.Tensor = None) -> th.Tensor:
         """
