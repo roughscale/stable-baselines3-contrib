@@ -65,7 +65,7 @@ class DRQNModule(nn.Module):
     :param linear_layer: Linear module
     """
 
-    def __init__(self, lstm_layers: nn.Module, activation_fn: nn.Module, linear_layers: nn.Module) -> None:
+    def __init__(self, lstm_layers: nn.Module, activation_fn: nn.Module, linear_layers: nn.Sequential) -> None:
         super().__init__()
         # this architecture requires an LSTM module to generate the history of obserations
         # then an MLP to approximate the Q values using the LSTM output as the input
@@ -74,27 +74,47 @@ class DRQNModule(nn.Module):
         self.linear_layers = linear_layers
 
     def forward(self, features: th.Tensor, lstm_states: Tuple[th.Tensor]) -> th.Tensor:
-        #print(features) # this seems to be different to obs??
-        #print("features shape")
-        #print(features.shape) # this is of size [ episode length, input_dim ]
-        #print("forward pass")
-        #print(lstm_states)
-        lstm_out, lstm_hidden_state = self.lstm_layers(features, lstm_states)
-        #print(lstm_hidden_state)
-        #print("lstm output")
-        #print(lstm_out) # this is of size [episode length, input_dim ]
-        #print(lstm_out.shape)
-        #print("lstm hn")
-        #print(hn)
-        # don't put activation function between lstm and linear layer
-        #linear_in = self.activation_fn()(lstm_out)
-        #output = self.linear_layer(linear_in)
-        output = self.linear_layers(lstm_out)
-        #print(output)
-        #print("output shape")
-        #print(output.shape) # this is of size [ episode_length, action_dim]
-        return output, lstm_hidden_state
+        #print("DRQNModule forward features shape {}".format(features.shape))
+        #if isinstance(features, th.nn.utils.rnn.PackedSequence):
+        #    print(features.data.shape)
+        # batched input is [N, L, H] 
+        # [ batch_size, seq_len, input_dim ]
+        # otherwise it is [seq_len, input_dim]
 
+        #if lstm_states is not None:
+        #   print(type(lstm_states))
+        
+        lstm_out, lstm_hidden_state = self.lstm_layers(features, lstm_states)
+        # for batched input lstm_out would be [N, L, out_dim]
+        # otherwise [L, out_dim]
+        # 
+        # and lstm_hidden_state would be [ N, out_dim]
+        # or just out_dim for unbatched
+        #
+        # however we only want to use the output of the last element 
+        # which is the representation of the state at that timestep
+        # 
+        # the lstm_hidden_state seems to be the hidden_state
+        # for the last timestep
+        # (h0,c0)
+        # use h0 as input for the linear layer
+        # check
+
+        #print(lstm_hidden_state[0].shape)
+        #print(features.shape)
+        #print(lstm_out.shape)
+        #print(lstm_out.reshape(-1))
+
+        #if features.shape[0] > 2:
+        #  print(lstm_out[:,-1,:])
+        #  print(th.eq(lstm_hidden_state[0], lstm_out[:,-1,:]))
+        #else:
+        #  print(lstm_out[-1])
+        #  print(lstm_hidden_state[0] == lstm_out[-1])
+        #print(lstm_hidden_state[0].shape)
+        output = self.linear_layers(lstm_hidden_state[0])
+        #print(output.shape)
+        return output, lstm_hidden_state
 
 class DRQNetwork(BasePolicy):
     """
@@ -139,18 +159,13 @@ class DRQNetwork(BasePolicy):
         self.features_dim = features_dim
         action_dim = int(self.action_space.n)  # number of actions
         # for multilayer LSTMs will need to implement something like the create_mlp function
-        lstm_layers = nn.LSTM(self.features_dim, lstm_hidden_size, lstm_num_layers)
+        lstm_layers = nn.LSTM(self.features_dim, lstm_hidden_size, lstm_num_layers, batch_first=True)
         #linear_layer = nn.Linear(lstm_hidden_size, action_dim)
         linear_layers = nn.Sequential(
-                [
                 nn.Linear(lstm_hidden_size,lstm_hidden_size),
-                self.activation_fn,
+                self.activation_fn(),
                 nn.Linear(lsmt_hidden_size,action_dim)
-                ]
         )
-        #lstm_layers = DRQNLSTM(self.features_dim, lstm_dim, lstm_num_layers)
-        #linear_layer = DRQNLinear(lstm_dim, action_dim)
-        #self.q_net = DRQNModule(lstm_layers, activation_fn, linear_layer)
         self.q_net = DRQNModule(lstm_layers, activation_fn, linear_layers)
 
     def forward(self, obs: th.Tensor, lstm_states: th.Tensor = None) -> th.Tensor:
@@ -173,7 +188,10 @@ class DRQNetwork(BasePolicy):
         #forward_result = self.q_net(features)
         #print(forward_result)
         #return forward_result
-        return self.q_net(self.extract_features(obs, self.features_extractor), lstm_states)
+        # extract_features doesn't support packed padded sequence
+        #return self.q_net(self.extract_features(obs, self.features_extractor), lstm_states)
+        return self.q_net(obs, lstm_states)
+
 
     def _predict(self, observation: th.Tensor, last_lstm_states: Tuple[th.Tensor],  deterministic: bool = True) -> th.Tensor:
         #print("drqn _predict")

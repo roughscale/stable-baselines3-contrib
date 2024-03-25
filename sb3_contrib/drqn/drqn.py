@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union
 import torch as th
 import numpy as np
 from torch.nn import functional as F
+from torch.nn.utils.rnn import pack_padded_sequence
 from gymnasium import spaces
 
 from stable_baselines3.common.buffers import ReplayBuffer
@@ -178,52 +179,69 @@ class DeepRecurrentQNetwork(DQN):
         losses = []
         batch_size = 1
         for _ in range(gradient_steps):
-            # Sample replay buffer
-            # return sequence lengths within the 1-d replay data vector
-            #replay_buffer_samples class is a tuple of tensors
-            # replay_buffer_sequence_samples class is a list of tuple of tensors
-            replay_seq_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
+                # Sample replay buffer
+                # return sequence lengths within the 1-d replay data vector
+                #replay_buffer_samples class is a tuple of tensors
+                # for batched input it has the shape [ batch, input, envs]
+                # where input is a sequence of transitions of variable lengths
+                # given by the replay_data.batch_lengths index
+                #
+                replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
 
-            # how can we do this as a batch? input sequences have variable length
-            # for now, implement as for loop
-            # look at LSTM packed sequences of variable length
-            # iterating over 32 batches of large sequences takes a very long time
-            # 
-            for batch in range(batch_size):
-                # just take first batch for the moment
-                replay_data = replay_seq_data[batch]
-                #print(replay_data.dones)
-                #print("replay_data")
-                #print(type(replay_data))
-                # print shape of the next_observations (one of the tuples)
-                print(replay_data.next_observations.shape)
-             
+                #print("train")
+                print("sampled replay sequence lengths {}".format(replay_data.lengths))
                 # what is the effect of th.no_grad if the sequence needs to keep gradient?
                 with th.no_grad():
+
+                    # convert padded tensors to padded sequence
+                    next_observations = pack_padded_sequence(replay_data.next_observations, replay_data.lengths, batch_first=True)
+
                     # Compute the next Q-values using the target network
                     # DQN uses these as a batch input of independent transitions
                     # We need to use it as one input sequence of transitions.
                     #print(len(replay_data.next_observations))
                     print("forward pass of q_net_target with None as h0,c0")
-                    next_q_values, _ = self.q_net_target(replay_data.next_observations)
-                    print(next_q_values.shape)
+                    #print(next_observations.data)
+                    next_q_values, _ = self.q_net_target(next_observations)
+                    #print("next q values shape {}".format(next_q_values.shape)) # this should now be (batch, actions)
                     # Follow greedy policy: use the one with the highest value
-                    # If the sequenced replay data is batched as (seq, batch, features)
-                    # then dim=2
-                    next_q_values, _ = next_q_values.max(dim=1)
+                    next_q_values, _ = next_q_values.max(dim=2)
+                    #print("next max q values shape {}".format(next_q_values.shape))
+
                     # Avoid potential broadcast issue
                     next_q_values = next_q_values.reshape(-1, 1)
+                    #print("reshaped next q values {}".format(next_q_values.shape))
                     # 1-step TD target
-                    target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
+                    # take the reward and dones for the last transition in the sequence
+                    target_q_values = replay_data.rewards[:,-1] + (1 - replay_data.dones[:,-1]) * self.gamma * next_q_values
 
+                observations = pack_padded_sequence(replay_data.observations, replay_data.lengths, batch_first=True)
                 # Get current Q-values estimates
                 #print(len(replay_data.observations))
                 print("forward pass of q_net with None as h0,c0")
-                current_q_values, _ = self.q_net(replay_data.observations)
-                print(current_q_values.shape)
+                current_q_values, _ = self.q_net(observations)
+                #print("current q values shape: {}".format(current_q_values.shape)) # this should be (batch, actions) shape
 
                 # Retrieve the q-values for the actions from the replay buffer
-                current_q_values = th.gather(current_q_values, dim=1, index=replay_data.actions.long())
+                # we only need to get the action for the last transition in the sequence
+                #print("replay data actions shape: {}".format(replay_data.actions.shape))
+
+                #print("replay data actions")
+                #print(replay_data.actions)
+
+                #print(replay_data.actions.reshape(1,-1))
+
+                # reshape
+                current_q_values = current_q_values.reshape(1,-1)
+                actions = replay_data.actions[:,-1]
+                #print("reshaped current_q_values {}".format(current_q_values.shape))
+                #print("replay actions shape {}".format(replay_data.actions.shape))
+                #print("reshaped actions {}".format(actions.shape))
+
+                current_q_values = th.gather(current_q_values, dim=1, index=actions.long())
+
+                #print("gathered current q values shape {}".format(current_q_values.shape))
+                #print(target_q_values.shape)
 
                 # Compute Huber loss (less sensitive to outliers)
                 # default is to calculate mean loss across elements
@@ -235,8 +253,8 @@ class DeepRecurrentQNetwork(DQN):
                 # perhaps use with th.no_grad() when printing the following to avoid backprop interaction
                 #print(F.smooth_l1_loss(current_q_values, target_q_values, reduction="none"))
                 loss = F.smooth_l1_loss(current_q_values, target_q_values, reduction="mean")
-                #print("loss")
-                #print(loss)
+                print("loss")
+                print(loss)
                 losses.append(loss.item())
 
                 # Optimize the policy
@@ -253,11 +271,11 @@ class DeepRecurrentQNetwork(DQN):
                 # weights after optimisation
                 #print(self.q_net.state_dict())
 
-            # Increase update counter
-            self._n_updates += gradient_steps
+        # Increase update counter
+        self._n_updates += gradient_steps
 
-            self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
-            self.logger.record("train/loss", np.mean(losses))
+        self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
+        self.logger.record("train/loss", np.mean(losses))
 
     # Taken from the off_policy_algorithm class
     def collect_rollouts(
