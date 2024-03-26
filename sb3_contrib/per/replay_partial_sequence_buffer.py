@@ -62,16 +62,18 @@ class ReplayPartialSequenceBuffer(ReplayBuffer):
         lstm_hidden_size = self.obs_shape[0]
         print(self.obs_shape)
         print(lstm_hidden_size)
+        # lstm state outputs from pytorch is normally a 2 element tuple of tensors (h0,c0)
+        # we convert this to 2-dim ndarray
         self.lstm_shape = np.array((2,lstm_hidden_size))
         print(self.lstm_shape)
         #print(self.lstm_shape.shape)
-        if False: # disable for now
-          self.lstm_states = (
-                     np.zeros((self.buffer_size, self.n_envs), dtype=np.float32),
-                     np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
-          )
-        else:
-          self.lstm_states = np.zeros((self.buffer_size, self.n_envs, *self.lstm_shape), dtype=np.float32)
+        #if False: # disable for now
+        #  self.lstm_states = (
+        #             np.zeros((self.buffer_size, self.n_envs), dtype=np.float32),
+        #             np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        #  )
+        #else:
+        self.lstm_states = np.zeros((self.buffer_size, self.n_envs, *self.lstm_shape), dtype=np.float32)
         #print("lstm_states")
         #print(self.lstm_states)
         #print("lstm_states shape")
@@ -90,7 +92,7 @@ class ReplayPartialSequenceBuffer(ReplayBuffer):
         reward: np.ndarray,
         done: np.ndarray,
         infos: List[Dict[str, Any]],
-        lstm_states: np.ndarray = None # 2d array. for the moment whilst we replay whole episodes. othwerwise Tuple[np.ndarray]
+        lstm_states: Tuple[np.ndarray] = None # 2d array. for the moment whilst we replay whole episodes. othwerwise Tuple[np.ndarray]
     ) -> None:
         """
         Add a new transition to the buffer.
@@ -145,7 +147,7 @@ class ReplayPartialSequenceBuffer(ReplayBuffer):
         reward: np.ndarray,
         done: np.ndarray,
         infos: List[Dict[str, Any]],
-        lstm_states: np.ndarray = None # disabled for now
+        lstm_states: Tuple[np.ndarray]
     ) -> None:
         # Reshape needed when using multiple envs with discrete observations
         # as numpy cannot broadcast (n_discrete,) to (n_discrete, 1)
@@ -181,7 +183,19 @@ class ReplayPartialSequenceBuffer(ReplayBuffer):
         #self.lstm_states[self.pos] = np.array(lstm_states).copy()
 
         # set lstm_states to zero
-        self.lstm_states = np.zeros((self.buffer_size, self.n_envs, *self.lstm_shape), dtype=np.float32)
+        # lstm_states will be a 2 element tuple of size [1, lstm_hidden_size]
+        # the 1 indicates unidirectoral LSTM but we can treat this as n_env
+        # convert tuple to ndarray
+        # QUICK HACK to match the shape [n_envs, 2, lstm_hidden_size ]
+        #print(lstm_states[0].shape)
+        #print(lstm_states[0].reshape(-1).shape)
+        #print(np.array([lstm_states[0].reshape(-1),lstm_states[1].reshape(-1)]).shape)
+        lstm_states_arr = np.array([[lstm_states[0].reshape(-1), lstm_states[1].reshape(-1)]])
+        #print(lstm_states_arr.shape)
+        # this is shape [1,2,hidden_size]
+        self.lstm_states[self.pos] = np.array(lstm_states_arr).copy()
+        # self.lstm_states should match shape of obs/new_obs
+        # [ n_envs, lstm_shape ] 
 
         if self.handle_timeout_termination:
             self.timeouts[self.pos] = np.array([info.get("TimeLimit.truncated", False) for info in infos])
@@ -254,14 +268,15 @@ class ReplayPartialSequenceBuffer(ReplayBuffer):
         #episode_ends = episode_starts + episode_lengths
 
         # now we want to return N steps from the batch index
-        seq_start = np.array([(batch_indices - n_prev_seq)])
+        seq_start = batch_indices - n_prev_seq
 
         # ensure seq_start isn't before episode start.
         seq_starts = np.maximum(seq_start,episode_starts)
 
         # debug
         #print(seq_starts)
-        #print(batch_indices)
+        #print(seq_starts.shape)
+        #print(batch_indices.shape)
         #print(episode_starts)
         #print(episode_lengths)
         #print(episode_ends)
@@ -273,14 +288,15 @@ class ReplayPartialSequenceBuffer(ReplayBuffer):
         # first loop is to retrieve sequences and determine max sequence length
         for ep in range(batch_size):
 
+           #print(ep)
            # the following returns the entire episode
            #sample_idxs = np.arange(episode_starts[ep],episode_ends[ep]) % self.buffer_size
            #
            # the following returns the partial episode up until transition
            seq_idxs = np.arange(seq_starts[ep],batch_indices[ep]) % self.buffer_size
-           print(seq_idxs)
+           #print(seq_idxs)
            #print("seq idxs shape")
-           print(seq_idxs.shape)
+           #print(seq_idxs.shape)
            
            # edge case if sample index 0 is selected with episode starting at same position
            if len(seq_idxs) == 0:
@@ -340,7 +356,8 @@ class ReplayPartialSequenceBuffer(ReplayBuffer):
           batch_actions[b][0:len(sample_idxs[b])] = self.actions[sample_idxs[b], env_idxs, :]
           batch_dones[b][0:len(sample_idxs[b])] = self.dones[sample_idxs[b], env_idxs]
           batch_rewards[b][0:len(sample_idxs[b])] = self.rewards[sample_idxs[b], env_idxs]
-          batch_lstm_states[b][0:len(sample_idxs[b])] = self.lstm_states[sample_idxs[b], env_idxs, :] # we should only return the initial transition lstm state
+          # we really should only return the initial transition lstm state
+          batch_lstm_states[b][0:len(sample_idxs[b])] = self.lstm_states[sample_idxs[b], env_idxs, :] 
 
         batch = (
                batch_observations,

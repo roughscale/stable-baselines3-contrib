@@ -74,22 +74,38 @@ class DRQNModule(nn.Module):
         self.linear_layers = linear_layers
 
     def forward(self, features: th.Tensor, lstm_states: Tuple[th.Tensor]) -> th.Tensor:
-        #print("DRQNModule forward features shape {}".format(features.shape))
+        #print("DRQNModule forward")
+        #print("input shape")
         #if isinstance(features, th.nn.utils.rnn.PackedSequence):
         #    print(features.data.shape)
-        # batched input is [N, L, H] 
+        #else:
+        #    print(features.shape)
+        # input could be non-sequential
+        # of shape [ n_envs, input_dim ]
+        # batched sequential input is [N, L, H] 
         # [ batch_size, seq_len, input_dim ]
-        # otherwise it is [seq_len, input_dim]
+        # otherwise unbatched sequential input 
+        # is [seq_len, input_dim]
+        # how to distinguish between non-sequential input
+        # and unbatched sequential input?
+        # perhaps don't need to distinguish for the moment
+        # non-seq input is passed as [1, H] 
+        # so it is effectively a sequence of 1
+        # this assumption won't hold for multi-env input
 
         #if lstm_states is not None:
-        #   print(type(lstm_states))
+        #    print("input lstm states")
+        #    print(type(lstm_states))
+        #    print(len(lstm_states))
+        #    print(lstm_states[0].shape)
         
         lstm_out, lstm_hidden_state = self.lstm_layers(features, lstm_states)
         # for batched input lstm_out would be [N, L, out_dim]
         # otherwise [L, out_dim]
         # 
-        # and lstm_hidden_state would be [ N, out_dim]
-        # or just out_dim for unbatched
+        # and lstm_hidden_state would be [ D * num_lstm_layers, N, out_dim]
+        # or just [ D * num_lstm_layers, out_dim ] for unbatched
+        # where D is 1 for uni-directional, 2 for bi-directional
         #
         # however we only want to use the output of the last element 
         # which is the representation of the state at that timestep
@@ -110,10 +126,22 @@ class DRQNModule(nn.Module):
         #  print(th.eq(lstm_hidden_state[0], lstm_out[:,-1,:]))
         #else:
         #  print(lstm_out[-1])
-        #  print(lstm_hidden_state[0] == lstm_out[-1])
-        #print(lstm_hidden_state[0].shape)
-        output = self.linear_layers(lstm_hidden_state[0])
+        ##  print(lstm_hidden_state[0] == lstm_out[-1])
+        # lstm_hidden_state is a tuple of tensors
+        # get h0 part of tuple and first element for unidirectional LSTM
+        #print("lstm out")
+        # lstm_hidden_size[0] is [ D*num_layers, N , H ] for batched
+        # or [ D*num_lstm_layers, H ] for unbatched
+        if lstm_hidden_state[0].dim() > 2:
+            linear_in = lstm_hidden_state[0][0]
+        else:
+            linear_in = lstm_hidden_state[0]
+        #print(linear_in.shape)
+        # the linear layer input should be [ N, H ]
+        output = self.linear_layers(linear_in)
+        #print("module output")
         #print(output.shape)
+        # output shape is [ N , action_dim]
         return output, lstm_hidden_state
 
 class DRQNetwork(BasePolicy):
@@ -164,7 +192,7 @@ class DRQNetwork(BasePolicy):
         linear_layers = nn.Sequential(
                 nn.Linear(lstm_hidden_size,lstm_hidden_size),
                 self.activation_fn(),
-                nn.Linear(lsmt_hidden_size,action_dim)
+                nn.Linear(lstm_hidden_size,action_dim)
         )
         self.q_net = DRQNModule(lstm_layers, activation_fn, linear_layers)
 
@@ -194,10 +222,16 @@ class DRQNetwork(BasePolicy):
 
 
     def _predict(self, observation: th.Tensor, last_lstm_states: Tuple[th.Tensor],  deterministic: bool = True) -> th.Tensor:
-        #print("drqn _predict")
+        # print("drqn _predict")
+        # observation is in the shape [n_envs, input_dim]
         q_values, lstm_states = self(observation, last_lstm_states)
+        #print("drqn_predict after")
         # Greedy action
-        #print(q_values)
+        #print(q_values.shape)
+        #print(type(lstm_states))
+        #print(lstm_states[0].shape)
+        # the following is from DQN.  What shape are the q-values in DQN?
+        #action = q_values.argmax(dim=1).reshape(-1)
         action = q_values.argmax(dim=1).reshape(-1)
         #print(action)
         return action, lstm_states

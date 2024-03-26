@@ -131,8 +131,6 @@ class DeepRecurrentQNetwork(DQN):
             _init_setup_model,
         )
 
-        self._last_lstm_states = None
-
         #print(type(self.policy)) # DRQNPolicy
         #print(type(self.q_net)) # DRQNetwork
         #print(type(self.q_net_target)) #DRQNetwork
@@ -177,7 +175,6 @@ class DeepRecurrentQNetwork(DQN):
         self._update_learning_rate(self.policy.optimizer)
 
         losses = []
-        batch_size = 1
         for _ in range(gradient_steps):
                 # Sample replay buffer
                 # return sequence lengths within the 1-d replay data vector
@@ -193,19 +190,33 @@ class DeepRecurrentQNetwork(DQN):
                 # what is the effect of th.no_grad if the sequence needs to keep gradient?
                 with th.no_grad():
 
+                    # convert lstm state to Tuple of tensors
+                    # replay_data.lstm_states should be in [ B, L, 2, lstm_hidden_size ] shape
+                    #print("replay data lstm states shape".format(replay_data.lstm_states.shape))
+                    # we only need the first hidden state of the sequence
+                    lstm_states = replay_data.lstm_states[:, 0, :, :]
+                    #print(lstm_states.shape)
+                    # this should now be in shape [B, 2, lstm_hidden size]
+                    # it needs to be ([D, B, lstm_hidden_size], [D, B, lstm_hidden_size])
+                    # for batched input
+                    h0 = lstm_states[:,0,:]
+                    c0 = lstm_states[:,1,:]
+                    #print(h0.reshape(1,*h0.shape).shape) # should be [1, B, lstm_hidden_size]
+                    #print(c0.reshape(1,*c0.shape).shape) # should be [1, B, lstm_hidden_size]
+                    lstm_state = (h0.reshape(1,*h0.shape),c0.reshape(1,*c0.shape))
                     # convert padded tensors to padded sequence
-                    next_observations = pack_padded_sequence(replay_data.next_observations, replay_data.lengths, batch_first=True)
+                    next_observations = pack_padded_sequence(replay_data.next_observations, replay_data.lengths, batch_first=True, enforce_sorted=False)
 
                     # Compute the next Q-values using the target network
                     # DQN uses these as a batch input of independent transitions
                     # We need to use it as one input sequence of transitions.
                     #print(len(replay_data.next_observations))
-                    print("forward pass of q_net_target with None as h0,c0")
+                    #print("forward pass of q_net_target with None as h0,c0")
                     #print(next_observations.data)
-                    next_q_values, _ = self.q_net_target(next_observations)
+                    next_q_values, _ = self.q_net_target(next_observations, lstm_state)
                     #print("next q values shape {}".format(next_q_values.shape)) # this should now be (batch, actions)
                     # Follow greedy policy: use the one with the highest value
-                    next_q_values, _ = next_q_values.max(dim=2)
+                    next_q_values, _ = next_q_values.max(dim=1)
                     #print("next max q values shape {}".format(next_q_values.shape))
 
                     # Avoid potential broadcast issue
@@ -213,13 +224,18 @@ class DeepRecurrentQNetwork(DQN):
                     #print("reshaped next q values {}".format(next_q_values.shape))
                     # 1-step TD target
                     # take the reward and dones for the last transition in the sequence
-                    target_q_values = replay_data.rewards[:,-1] + (1 - replay_data.dones[:,-1]) * self.gamma * next_q_values
+                    #print("rewards shape {}".format(replay_data.rewards.shape))
+                    #print("dones shape {}".format(replay_data.dones.shape))
+                    #print("rewards reshape {}".format(replay_data.rewards[:,-1].reshape(-1,1)))
+                    #print("dones reshape {}".format(replay_data.dones[:,-1].reshape(-1,1)))
+                    target_q_values = replay_data.rewards[:,-1].reshape(-1,1) + (1 - replay_data.dones[:,-1].reshape(-1,1)) * self.gamma * next_q_values
+                    #print("target q values shape {}".format(target_q_values.shape))
 
-                observations = pack_padded_sequence(replay_data.observations, replay_data.lengths, batch_first=True)
+                observations = pack_padded_sequence(replay_data.observations, replay_data.lengths, batch_first=True, enforce_sorted=False)
                 # Get current Q-values estimates
                 #print(len(replay_data.observations))
-                print("forward pass of q_net with None as h0,c0")
-                current_q_values, _ = self.q_net(observations)
+                #print("forward pass of q_net with None as h0,c0")
+                current_q_values, _ = self.q_net(observations,lstm_state)
                 #print("current q values shape: {}".format(current_q_values.shape)) # this should be (batch, actions) shape
 
                 # Retrieve the q-values for the actions from the replay buffer
@@ -232,7 +248,9 @@ class DeepRecurrentQNetwork(DQN):
                 #print(replay_data.actions.reshape(1,-1))
 
                 # reshape
-                current_q_values = current_q_values.reshape(1,-1)
+                # no need to reshape current_q_values
+                #current_q_values = current_q_values.reshape(1,-1)
+                # select the action of the last transition
                 actions = replay_data.actions[:,-1]
                 #print("reshaped current_q_values {}".format(current_q_values.shape))
                 #print("replay actions shape {}".format(replay_data.actions.shape))
@@ -253,8 +271,6 @@ class DeepRecurrentQNetwork(DQN):
                 # perhaps use with th.no_grad() when printing the following to avoid backprop interaction
                 #print(F.smooth_l1_loss(current_q_values, target_q_values, reduction="none"))
                 loss = F.smooth_l1_loss(current_q_values, target_q_values, reduction="mean")
-                print("loss")
-                print(loss)
                 losses.append(loss.item())
 
                 # Optimize the policy
@@ -270,6 +286,8 @@ class DeepRecurrentQNetwork(DQN):
                 self.policy.optimizer.step()
                 # weights after optimisation
                 #print(self.q_net.state_dict())
+                print("loss")
+                print(loss)
 
         # Increase update counter
         self._n_updates += gradient_steps
@@ -352,8 +370,9 @@ class DeepRecurrentQNetwork(DQN):
 
             # Store data in replay buffer (normalized action and unnormalized observation)
             # at the moment, we don't store lstm state in the buffer as we replay entire episode
+            #self._store_transition(replay_buffer, buffer_actions, new_obs, rewards, dones, infos)
+            # NOTE: we store the self._last_lstm_state that is passed through the neural network (not the output lstm_states)
             self._store_transition(replay_buffer, buffer_actions, new_obs, rewards, dones, infos)
-            #self._store_transition(replay_buffer, buffer_actions, new_obs, rewards, dones, infos, lstm_states)
             
 
             self._last_obs = new_obs
@@ -438,18 +457,20 @@ class DeepRecurrentQNetwork(DQN):
             # Discrete case, no need to normalize or clip
             buffer_action = unscaled_action
             action = buffer_action
+        # 
+        #print("_sample_action lstm_states")
+        #print(type(self._last_lstm_states)) # assume 2 element tuple of lstm_hidden_size, ie no n_envs
+        #print(self._last_lstm_states[0].shape)
         return action, buffer_action, lstm_states, computed_action
 
-    ## No need to override parent classes with respect to saving to replay buffer 
-    def _store_transition_disabled(
+    def _store_transition(
         self,
         replay_buffer: ReplayBuffer,
         buffer_action: np.ndarray,
         new_obs: Union[np.ndarray, Dict[str, np.ndarray]],
         reward: np.ndarray,
         dones: np.ndarray,
-        infos: List[Dict[str, Any]],
-        lstm_states: Tuple[np.ndarray]
+        infos: List[Dict[str, Any]]
     ) -> None:
         """
         Store transition in the replay buffer.
@@ -464,7 +485,6 @@ class DeepRecurrentQNetwork(DQN):
         :param dones: Termination signal
         :param infos: List of additional information about the transition.
             It may contain the terminal observations and information about timeout.
-        :param lstm_states: Tuple of the last hidden/cell state of the LSTM layer
         """
         # Store only the unnormalized version
         if self._vec_normalize_env is not None:
@@ -501,7 +521,7 @@ class DeepRecurrentQNetwork(DQN):
             reward_,
             dones,
             infos,
-            lstm_states
+            (self._last_lstm_states[0].numpy(),self._last_lstm_states[1].numpy()) # convert tensor to numpy for buffer storage
         )
 
         self._last_obs = new_obs
