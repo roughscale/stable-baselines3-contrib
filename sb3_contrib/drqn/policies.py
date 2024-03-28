@@ -188,12 +188,22 @@ class DRQNetwork(BasePolicy):
         action_dim = int(self.action_space.n)  # number of actions
         # for multilayer LSTMs will need to implement something like the create_mlp function
         lstm_layers = nn.LSTM(self.features_dim, lstm_hidden_size, lstm_num_layers, batch_first=True)
-        #linear_layer = nn.Linear(lstm_hidden_size, action_dim)
+        # the following is a bare linear output layer (no activation_fn)
+        # this seems to match the description of DRQN
+        # ie the first linear layer of DQN is replaced by a LSTM
+        # the first linear layer in DQN is followed by an activation fn
+        # not sure if this activation function is kept DRQN
+        # perhaps try without and then try with.
+        # the second linear layer is simply an output layer
         linear_layers = nn.Sequential(
-                nn.Linear(lstm_hidden_size,lstm_hidden_size),
-                self.activation_fn(),
-                nn.Linear(lstm_hidden_size,action_dim)
+               nn.Linear(lstm_hidden_size, action_dim)
         )
+        # the following adds an MLP as a linear layer
+        #linear_layers = nn.Sequential(
+        #        nn.Linear(lstm_hidden_size,lstm_hidden_size),
+        #        self.activation_fn(),
+        #        nn.Linear(lstm_hidden_size,action_dim)
+        #)
         self.q_net = DRQNModule(lstm_layers, activation_fn, linear_layers)
 
     def forward(self, obs: th.Tensor, lstm_states: th.Tensor = None) -> th.Tensor:
