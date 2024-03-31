@@ -23,6 +23,7 @@ from stable_baselines3.common.noise import ActionNoise, VectorizedActionNoise
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, RolloutReturn, Schedule, TrainFreq, TrainFrequencyUnit
 from stable_baselines3.common.utils import safe_mean, should_collect_more_steps
 from stable_baselines3.common.vec_env import VecEnv
+from sb3_contrib.per.prioritized_replay_sequence_buffer import PrioritizedReplaySequenceBuffer
 
 
 from sb3_contrib.drqn.policies import DRQNPolicy
@@ -83,6 +84,7 @@ class DeepRecurrentQNetwork(DQN):
         buffer_size: int = 1000000,
         learning_starts: int = 50000,
         batch_size: int = 32,
+        n_prev_seq: int = 10,
         tau: float = 1,
         gamma: float = 0.99,
         train_freq: Union[int, Tuple[int, str]] = 4,
@@ -131,6 +133,8 @@ class DeepRecurrentQNetwork(DQN):
             _init_setup_model,
         )
 
+        # Number of previous transitions to sample from experience replay 
+        self.n_prev_seq = n_prev_seq
         #print(type(self.policy)) # DRQNPolicy
         #print(type(self.q_net)) # DRQNetwork
         #print(type(self.q_net_target)) #DRQNetwork
@@ -142,9 +146,11 @@ class DeepRecurrentQNetwork(DQN):
         #self.single_hidden_state_shape = (self.policy.lstm_num_layers, self.n_envs, self.policy.lstm_hidden_size)
         self.single_hidden_state_shape = (self.policy.lstm_num_layers, self.policy.lstm_hidden_size)
         self._last_lstm_states = (
-                th.zeros(self.single_hidden_state_shape, device=self.device),
-                th.zeros(self.single_hidden_state_shape, device=self.device),
+                th.zeros(self.n_envs, *self.single_hidden_state_shape, device=self.device),
+                th.zeros(self.n_envs, *self.single_hidden_state_shape, device=self.device),
             )
+
+        #print(type(self.replay_buffer))
 
     def learn(
         self: SelfDRQN,
@@ -183,27 +189,30 @@ class DeepRecurrentQNetwork(DQN):
                 # where input is a sequence of transitions of variable lengths
                 # given by the replay_data.batch_lengths index
                 #
-                replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
+                replay_data = self.replay_buffer.sample(batch_size, self.n_prev_seq, env=self._vec_normalize_env)  # type: ignore[union-attr]
 
                 #print("train")
-                print("sampled replay sequence lengths {}".format(replay_data.lengths))
+                #print("sampled replay sequence lengths {}".format(replay_data.lengths))
                 # what is the effect of th.no_grad if the sequence needs to keep gradient?
                 with th.no_grad():
 
                     # convert lstm state to Tuple of tensors
-                    # replay_data.lstm_states should be in [ B, L, 2, lstm_hidden_size ] shape
-                    #print("replay data lstm states shape".format(replay_data.lstm_states.shape))
+                    # replay_data.lstm_states should be in [ B, env, L, 2, lstm_hidden_size ] shape
+                    #print("replay data lstm states shape {}".format(replay_data.lstm_states.shape))
                     # we only need the first hidden state of the sequence
-                    lstm_states = replay_data.lstm_states[:, 0, :, :]
+                    # and only the first env (we don't support multi-env LSTM DQN)
+                    # this array should match [ batch, n_envs, D, 2, lstm_hidden_size]
+                    lstm_states = replay_data.lstm_states[:, 0, :, :, :]
                     #print(lstm_states.shape)
-                    # this should now be in shape [B, 2, lstm_hidden size]
-                    # it needs to be ([D, B, lstm_hidden_size], [D, B, lstm_hidden_size])
-                    # for batched input
-                    h0 = lstm_states[:,0,:]
-                    c0 = lstm_states[:,1,:]
+                    b_dim,d_dim,t_dim,h_dim = lstm_states.shape
+                    lstm_states = lstm_states.reshape(t_dim, d_dim, b_dim, h_dim)
+                    # this should now be in shape [2, D, B, lstm_hidden size]
+                    h0 = lstm_states[0]
+                    c0 = lstm_states[1]
+                    #print(h0.shape)
                     #print(h0.reshape(1,*h0.shape).shape) # should be [1, B, lstm_hidden_size]
                     #print(c0.reshape(1,*c0.shape).shape) # should be [1, B, lstm_hidden_size]
-                    lstm_state = (h0.reshape(1,*h0.shape),c0.reshape(1,*c0.shape))
+                    lstm_state = (h0,c0)
                     # convert padded tensors to padded sequence
                     next_observations = pack_padded_sequence(replay_data.next_observations, replay_data.lengths, batch_first=True, enforce_sorted=False)
 
@@ -270,7 +279,25 @@ class DeepRecurrentQNetwork(DQN):
                 # when it comes to backprop??
                 # perhaps use with th.no_grad() when printing the following to avoid backprop interaction
                 #print(F.smooth_l1_loss(current_q_values, target_q_values, reduction="none"))
-                loss = F.smooth_l1_loss(current_q_values, target_q_values, reduction="mean")
+
+                # Special case when using PrioritizedReplayBuffer (PER)
+                if isinstance(self.replay_buffer, PrioritizedReplaySequenceBuffer):
+                  # TD error in absolute value
+                  td_error = th.abs(current_q_values - target_q_values)
+                  #print(td_error)
+                  #print(replay_data.weights)
+                  # Weighted Huber loss using importance sampling weights
+                  loss = (replay_data.weights * th.where(td_error < 1.0, 0.5 * td_error**2, td_error - 0.5)).mean()
+                  #print(loss)
+                  # Update priorities, they will be proportional to the td error
+                  assert replay_data.leaf_nodes_indices is not None, "Node leaf node indices provided"
+                  self.replay_buffer.update_priorities(
+                    replay_data.leaf_nodes_indices, td_error, self._current_progress_remaining
+                  )
+                else:
+                  # Compute Huber loss (less sensitive to outliers)
+                  loss = F.smooth_l1_loss(current_q_values, target_q_values)
+
                 losses.append(loss.item())
 
                 # Optimize the policy
@@ -403,8 +430,8 @@ class DeepRecurrentQNetwork(DQN):
                     # return lstm state
                     print("reset self._last_lstm_states")
                     self._last_lstm_states = (
-                      th.zeros(self.single_hidden_state_shape, device=self.device),
-                      th.zeros(self.single_hidden_state_shape, device=self.device),
+                      th.zeros(self.n_envs, *self.single_hidden_state_shape, device=self.device),
+                      th.zeros(self.n_envs, *self.single_hidden_state_shape, device=self.device),
                    )
         callback.on_rollout_end()
 
@@ -434,6 +461,7 @@ class DeepRecurrentQNetwork(DQN):
         # we need to record hidden history of each action, regardless if random or predicted,
         # so that at prediction time, the network will be able to utilise this "history" to 
         # better predict the action to be taken at that time
+        # we don't support multi-env LSTM agents, so take first env lstm_state
         unscaled_action, lstm_states, computed_action = self.predict(self._last_obs, self._last_lstm_states, deterministic=False)
         # Select action randomly or according to policy
         if self.num_timesteps < learning_starts and not (self.use_sde and self.use_sde_at_warmup):

@@ -76,10 +76,20 @@ class DRQNModule(nn.Module):
     def forward(self, features: th.Tensor, lstm_states: Tuple[th.Tensor]) -> th.Tensor:
         #print("DRQNModule forward")
         #print("input shape")
-        #if isinstance(features, th.nn.utils.rnn.PackedSequence):
-        #    print(features.data.shape)
-        #else:
-        #    print(features.shape)
+        if isinstance(features, th.nn.utils.rnn.PackedSequence):
+            print("packed input")
+            print(features.data.shape)
+        else:
+            print("tensor input")
+            print(features.shape)
+            # force batched input
+            if features.dim() == 2:
+                # batch of 1
+                features = features.reshape(1,*features.shape)
+                print("reshaped features")
+                print(features.shape)
+            else:
+                print(features.shape)
         # input could be non-sequential
         # of shape [ n_envs, input_dim ]
         # batched sequential input is [N, L, H] 
@@ -93,13 +103,41 @@ class DRQNModule(nn.Module):
         # so it is effectively a sequence of 1
         # this assumption won't hold for multi-env input
 
-        #if lstm_states is not None:
-        #    print("input lstm states")
-        #    print(type(lstm_states))
-        #    print(len(lstm_states))
-        #    print(lstm_states[0].shape)
+        if lstm_states is not None:
+            #print("input lstm states")
+            #print(type(lstm_states))
+            #print(len(lstm_states))
+            # the following is [D, n_env, dim]
+            # it needs to be in [ D, B, dim]
+            # we will use n_env to be used as a batch of 1
+            #print(lstm_states[0].shape)
+            pass
         
-        lstm_out, lstm_hidden_state = self.lstm_layers(features, lstm_states)
+        # not sure why lstm_state is coming in with different shapes
+        # we assume h0 and c0 have same shape
+        d_dim,b_dim,h_dim = lstm_states[0].shape
+        if d_dim != self.lstm_layers.num_layers:
+            #print("wrong shape")
+            #print(lstm_states[0].shape)
+            # wrong shape. This happens with the initial zero h0,c0.
+            h0 = lstm_states[0].reshape(b_dim,d_dim,h_dim)
+            c0 = lstm_states[1].reshape(b_dim,d_dim,h_dim)
+        else:
+            #print("right shape")
+            #print(lstm_states[0].shape)
+            h0 = lstm_states[0]
+            c0 = lstm_states[1]
+        # no need for this. lstm_states is in the right shape (for single batch)
+        #if lstm_states[0].dim() == 3:
+        #    #error
+        #    pass
+        #b_dim,d_dim,h_dim = lstm_states[0].shape 
+        #h0 = lstm_states[0].reshape(d_dim, b_dim, h_dim)
+        #c0 = lstm_states[1].reshape(d_dim, b_dim, h_dim)
+        #print(h0.shape)
+        # otherwise lstm_state is in proper shape (D, B, dim)
+        # (h0,c0) should now be in ([D, B=1, dim],[D, B=1, dim] shape
+        lstm_out, lstm_hidden_state = self.lstm_layers(features, (h0,c0))
         # for batched input lstm_out would be [N, L, out_dim]
         # otherwise [L, out_dim]
         # 
@@ -116,24 +154,35 @@ class DRQNModule(nn.Module):
         # use h0 as input for the linear layer
         # check
 
+        # after lstm layers 
+        #print("forward after lstm layers")
+        #print("lstm shape")
+        # with batched input, this should be 
+        # [D*num_layers, B, dim]
         #print(lstm_hidden_state[0].shape)
         #print(features.shape)
-        #print(lstm_out.shape)
+        #if isinstance(lstm_out, th.nn.utils.rnn.PackedSequence):
+        #    print("packed output")
+        #    print(lstm_out.data.shape)
+        #    output, input_sizes = th.nn.utils.rnn.pad_packed_sequence(lstm_out, batch_first=True)
+        #    print(output.shape)
+        #    # this should be in [ B, L, dim} form
+        #    print(output[:,-1,:])
+        #    print(th.eq(lstm_hidden_state[0][-1], output[:,-1,:]))
+        #else:
+        #    print(lstm_out.shape)
+        # this should be [N, L, D*dim ] 
         #print(lstm_out.reshape(-1))
 
-        #if features.shape[0] > 2:
-        #  print(lstm_out[:,-1,:])
-        #  print(th.eq(lstm_hidden_state[0], lstm_out[:,-1,:]))
-        #else:
-        #  print(lstm_out[-1])
-        ##  print(lstm_hidden_state[0] == lstm_out[-1])
-        # lstm_hidden_state is a tuple of tensors
-        # get h0 part of tuple and first element for unidirectional LSTM
-        #print("lstm out")
+        #print(lstm_out[:,-1,:])
+        #print(th.eq(lstm_hidden_state[0][-1], lstm_out[:,-1,:]))
+        # last element of lstm_out equals the last element of the h0 tuple
+        #
         # lstm_hidden_size[0] is [ D*num_layers, N , H ] for batched
         # or [ D*num_lstm_layers, H ] for unbatched
         if lstm_hidden_state[0].dim() > 2:
-            linear_in = lstm_hidden_state[0][0]
+              # we should use the last layers h0
+              linear_in = lstm_hidden_state[0][-1]
         else:
             linear_in = lstm_hidden_state[0]
         #print(linear_in.shape)
@@ -142,6 +191,7 @@ class DRQNModule(nn.Module):
         #print("module output")
         #print(output.shape)
         # output shape is [ N , action_dim]
+        # why is hidden state 
         return output, lstm_hidden_state
 
 class DRQNetwork(BasePolicy):
@@ -164,8 +214,6 @@ class DRQNetwork(BasePolicy):
         action_space: spaces.Discrete,
         features_extractor: BaseFeaturesExtractor,
         features_dim: int,
-        lstm_num_layers: int,
-        lstm_hidden_size: int,
         net_arch: Optional[List[int]] = None,
         activation_fn: Type[nn.Module] = nn.ReLU,
         normalize_images: bool = True,
@@ -186,6 +234,8 @@ class DRQNetwork(BasePolicy):
         self.activation_fn = activation_fn
         self.features_dim = features_dim
         action_dim = int(self.action_space.n)  # number of actions
+        lstm_num_layers = len(self.net_arch)
+        lstm_hidden_size = self.net_arch[0]
         # for multilayer LSTMs will need to implement something like the create_mlp function
         lstm_layers = nn.LSTM(self.features_dim, lstm_hidden_size, lstm_num_layers, batch_first=True)
         # the following is a bare linear output layer (no activation_fn)
@@ -196,6 +246,7 @@ class DRQNetwork(BasePolicy):
         # perhaps try without and then try with.
         # the second linear layer is simply an output layer
         linear_layers = nn.Sequential(
+               self.activation_fn(),
                nn.Linear(lstm_hidden_size, action_dim)
         )
         # the following adds an MLP as a linear layer
@@ -232,14 +283,31 @@ class DRQNetwork(BasePolicy):
 
 
     def _predict(self, observation: th.Tensor, last_lstm_states: Tuple[th.Tensor],  deterministic: bool = True) -> th.Tensor:
-        # print("drqn _predict")
+        #print("drqn _predict")
+        #print("lstm shape before")
+        #print(type(last_lstm_states))
+        # last_lstm_states is env aware
+        # so observation is (although only supports 1 env)
+        # although observation should also be a sequence
+        # we will treat this as a sequence of 1 obs
+        # so last_lstm_state will need to be 
+        # in shape ([B,D,dim],[B, D,dim]) where B = 1
+        # here we do the same (n_envs) is treated as batch of 1.
+        # so they will both match dimensions
+        #print(last_lstm_states[0].shape)
+        #print(last_lstm_states[1].shape)
+        
         # observation is in the shape [n_envs, input_dim]
         q_values, lstm_states = self(observation, last_lstm_states)
         #print("drqn_predict after")
+        # this won't be 
         # Greedy action
         #print(q_values.shape)
+        # lstm_states returned from forward call isn't env aware
+        # but we should be able to use the batch of 1 as the env
         #print(type(lstm_states))
         #print(lstm_states[0].shape)
+        #print(lstm_states[1].shape)
         # the following is from DQN.  What shape are the q-values in DQN?
         #action = q_values.argmax(dim=1).reshape(-1)
         action = q_values.argmax(dim=1).reshape(-1)
@@ -296,17 +364,16 @@ class DRQNPolicy(BasePolicy):
         # here net_arch refers to the lstm network
         # currently hardcoded as 1 layer of features_dim
         self.net_arch = net_arch
-        self.lstm_num_layers = 1
+        self.lstm_num_layers = len(self.net_arch)
+        #self.lstm_num_layers = 1
         self.lstm_hidden_size = self.net_arch[0]
-        print(net_arch)
+        #print(net_arch)
 
         self.activation_fn = activation_fn
 
         self.net_args = {
             "observation_space": self.observation_space,
             "action_space": self.action_space,
-            "lstm_num_layers": self.lstm_num_layers,
-            "lstm_hidden_size": self.lstm_hidden_size,
             "net_arch": self.net_arch,
             "activation_fn": self.activation_fn,
             "normalize_images": normalize_images

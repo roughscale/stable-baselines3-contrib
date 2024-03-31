@@ -14,7 +14,20 @@ from sb3_contrib.common.recurrent.type_aliases import RNNStates
 
 from stable_baselines3.common.type_aliases import ReplayBufferSamples
 from stable_baselines3.common.vec_env.vec_normalize import VecNormalize
-from stable_baselines3.per.replaypartialsequencebuffer import ReplayPartialSequenceBuffer
+from stable_baselines3.common.utils import get_linear_fn
+from stable_baselines3.common.prioritized_replay_buffer import SumTree
+from sb3_contrib.per.replay_partial_sequence_buffer import ReplayPartialSequenceBuffer
+
+class PrioritizedReplayBufferSequenceSamples(NamedTuple):
+    observations: th.Tensor
+    actions: th.Tensor
+    next_observations: th.Tensor
+    dones: th.Tensor
+    rewards: th.Tensor
+    lstm_states: th.Tensor
+    weights: Union[th.Tensor, float] = 1.0
+    lengths: List = None # needed for padded sequences.
+    leaf_nodes_indices: Optional[np.ndarray] = None
 
 class PrioritizedReplaySequenceBuffer(ReplayPartialSequenceBuffer):
     """
@@ -32,12 +45,42 @@ class PrioritizedReplaySequenceBuffer(ReplayPartialSequenceBuffer):
         buffer_size: int,
         observation_space: spaces.Space,
         action_space: spaces.Space,
+        lstm_num_layers = 1,
         lstm_hidden_size = None,
         device: Union[th.device, str] = "auto",
         n_envs: int = 1,
         optimize_memory_usage: bool = False,
+        alpha: float = 0.6,
+        beta: float = 0.4,
+        final_beta: float = 1.0,
+        min_priority: float = 1e-8
+
     ):
-        super().__init__(buffer_size, observation_space, action_space, device, n_envs, optimize_memory_usage)
+        super().__init__(buffer_size, observation_space, action_space, device, n_envs, optimize_memory_usage, lstm_num_layers=lstm_num_layers)
+
+        assert optimize_memory_usage is False, "PrioritizedReplayBuffer does not support optimize_memory_usage=True"
+
+        self.min_priority = min_priority
+        self.alpha = alpha  # determines how much prioritization is used, alpha = 0 corresponding to the uniform case
+        self.max_priority = self.min_priority  # priority for new samples, init as eps
+        # Track the training progress remaining (from 1 to 0)
+        # this is used to update beta
+        self._current_progress_remaining = 1.0
+        self.inital_beta = beta
+        self.final_beta = final_beta
+        self.beta_schedule = get_linear_fn(
+            self.inital_beta,
+            self.final_beta,
+            end_fraction=1.0,
+        )
+
+        # SumTree: data structure to store priorities
+        self.tree = SumTree(buffer_size=buffer_size)
+
+    @property
+    def beta(self) -> float:
+        # Linear schedule
+        return self.beta_schedule(self._current_progress_remaining)
 
     # need to override parent
     def add(
@@ -61,10 +104,13 @@ class PrioritizedReplaySequenceBuffer(ReplayPartialSequenceBuffer):
         :param infos: Eventual information given by the environment.
         """
 
-        super().__init__(obs, next_obs, action, reward, done, infos, lstm_states)
+        # store transition index with maximum priority in sum tree
+        self.tree.add(self.max_priority, self.pos)
+
+        super().add(obs, next_obs, action, reward, done, infos, lstm_states)
 
     # the following is an overridden version of the inherited add() method
-    def _add(
+    def _add_disabled(
         self,
         obs: np.ndarray,
         next_obs: np.ndarray,
@@ -114,30 +160,48 @@ class PrioritizedReplaySequenceBuffer(ReplayPartialSequenceBuffer):
         :param env: Associated VecEnv to normalize the observations/rewards when sampling
         :return: Samples
         """
-        # When the buffer is full, we rewrite on old episodes. We don't want to
-        # sample incomplete episode transitions, so we have to eliminate some indexes.
-        is_valid = self.ep_length > 0
-        if not np.any(is_valid):
-            raise RuntimeError(
-                "Unable to sample before the end of the first episode. We recommend choosing a value "
-                "for learning_starts that is greater than the maximum number of timesteps in the environment."
-            )
-        # Get the indices of valid transitions
-        # Example:
-        # if is_valid = [[True, False, False], [True, False, True]],
-        # is_valid has shape (buffer_size=2, n_envs=3)
-        # then valid_indices = [0, 3, 5]
-        # they correspond to is_valid[0, 0], is_valid[1, 0] and is_valid[1, 2]
-        # or in numpy format ([rows], [columns]): (array([0, 1, 1]), array([0, 0, 2]))
-        # Those indices are obtained back using np.unravel_index(valid_indices, is_valid.shape)
-        valid_indices = np.flatnonzero(is_valid)
-        # Sample valid transitions that will constitute the minibatch of size batch_size
-        # we only return 1 episode
-        #batch_size=32
-        sampled_indices = np.random.choice(valid_indices, size=batch_size, replace=True)
-        # Unravel the indexes, i.e. recover the batch and env indices.
-        # Example: if sampled_indices = [0, 3, 5], then batch_indices = [0, 1, 1] and env_indices = [0, 0, 2]
-        batch_indices, env_indices = np.unravel_index(sampled_indices, is_valid.shape)
+
+        leaf_nodes_indices = np.zeros(batch_size, dtype=np.uint32)
+        priorities = np.zeros((batch_size, 1))
+        sample_indices = np.zeros(batch_size, dtype=np.uint32)
+
+        # To sample a minibatch of size k, the range [0, total_sum] is divided equally into k ranges.
+        # Next, a value is uniformly sampled from each range. Finally the transitions that correspond
+        # to each of these sampled values are retrieved from the tree.
+        segment_size = self.tree.total_sum/ batch_size
+
+        for batch_idx in range(batch_size):
+            # extremes of the current segment
+            start, end = segment_size * batch_idx, segment_size * (batch_idx + 1)
+
+            # uniformely sample a value from the current segment
+            cumulative_sum = np.random.uniform(start, end)
+
+            # leaf_node_idx is a index of a sample in the tree, needed further to update priorities
+            # sample_idx is a sample index in buffer, needed further to sample actual transitions
+            leaf_node_idx, priority, sample_idx = self.tree.get(cumulative_sum)
+
+            leaf_nodes_indices[batch_idx] = leaf_node_idx
+            priorities[batch_idx] = priority
+            sample_indices[batch_idx] = sample_idx
+
+        #print(sample_indices)
+        # probability of sampling transition i as P(i) = p_i^alpha / \sum_{k} p_k^alpha
+        # where p_i > 0 is the priority of transition i.
+        probs = priorities / self.tree.total_sum
+
+        # Importance sampling weights.
+        # All weights w_i were scaled so that max_i w_i = 1.
+        weights = (self.size() * probs) ** -self.beta
+        weights = weights / weights.max()
+
+        # TODO: add proper support for multi env
+        # env_indices = np.random.randint(0, high=self.n_envs, size=(len(sample_idxs),))
+        env_indices = np.zeros(batch_size, dtype=np.uint32)
+        batch_indices = sample_indices
+
+        print("prioritized sample indices")
+        print(batch_indices)
 
         episode_starts = self.ep_start[batch_indices, env_indices]  # this should return a batch_size array of start pos
 
@@ -196,9 +260,34 @@ class PrioritizedReplaySequenceBuffer(ReplayPartialSequenceBuffer):
                batch_next_obs,
                batch_dones,
                batch_rewards,
-               batch_lstm_states
+               batch_lstm_states,
+               weights
         )
 
         #batch_lengths = np.array(lengths,dtype=np.float)
 
-        return ReplaySequenceBufferSamples(*tuple(map(self.to_torch, batch)),lengths)  # type: ignore
+        return PrioritizedReplayBufferSequenceSamples(*tuple(map(self.to_torch, batch)),lengths,leaf_nodes_indices)  # type: ignore
+
+    def update_priorities(self, leaf_nodes_indices: np.ndarray, td_errors: th.Tensor, progress_remaining: float) -> None:
+        """
+        Update transition priorities.
+        :param leaf_nodes_indices: Indices for the leaf nodes to update
+            (correponding to the transitions)
+        :param td_errors: New priorities, td error in the case of
+            proportional prioritized replay buffer.
+        :param progress_remaining: Current progress remaining (starts from 1 and ends to 0)
+            to linearly anneal beta from its start value to 1.0 at the end of training
+        """
+        # Update beta schedule
+        self._current_progress_remaining = progress_remaining
+        td_errors = td_errors.detach().cpu().numpy().flatten()
+
+        for leaf_node_idx, td_error in zip(leaf_nodes_indices, td_errors):
+            # Proportional prioritization priority = (abs(td_error) + eps) ^ alpha
+            # where eps is a small positive constant that prevents the edge-case of transitions not being
+            # revisited once their error is zero. (Section 3.3)
+            priority = (abs(td_error) + self.min_priority) ** self.alpha
+            self.tree.update(leaf_node_idx, priority)
+            # Update max priority for new samples
+            self.max_priority = max(self.max_priority, priority)
+

@@ -40,10 +40,11 @@ class ReplayPartialSequenceBuffer(ReplayBuffer):
         buffer_size: int,
         observation_space: spaces.Space,
         action_space: spaces.Space,
-        lstm_hidden_size = None,
         device: Union[th.device, str] = "auto",
         n_envs: int = 1,
         optimize_memory_usage: bool = False,
+        lstm_hidden_size = None,
+        lstm_num_layers = 1
     ):
         super().__init__(buffer_size, observation_space, action_space, device, n_envs, optimize_memory_usage)
 
@@ -64,7 +65,8 @@ class ReplayPartialSequenceBuffer(ReplayBuffer):
         print(lstm_hidden_size)
         # lstm state outputs from pytorch is normally a 2 element tuple of tensors (h0,c0)
         # we convert this to 2-dim ndarray
-        self.lstm_shape = np.array((2,lstm_hidden_size))
+        self.lstm_shape = np.array((lstm_num_layers,2,lstm_hidden_size))
+        print(self.lstm_shape)
         print(self.lstm_shape)
         #print(self.lstm_shape.shape)
         #if False: # disable for now
@@ -183,16 +185,19 @@ class ReplayPartialSequenceBuffer(ReplayBuffer):
         #self.lstm_states[self.pos] = np.array(lstm_states).copy()
 
         # set lstm_states to zero
-        # lstm_states will be a 2 element tuple of size [1, lstm_hidden_size]
-        # the 1 indicates unidirectoral LSTM but we can treat this as n_env
+        # lstm_states will be a 2 element tuple of size [D, lstm_hidden_size]
+        # the D = 1 * num_lstm_layers for unidirectoral and 2 * num_lstm_layers for bidirectional
+        # assume uni-directional
+        # we need to shape it as ndarray [ n_envs, D, 2, lstm_hidden_size ]
         # convert tuple to ndarray
-        # QUICK HACK to match the shape [n_envs, 2, lstm_hidden_size ]
+        #print("lstm states shape")
         #print(lstm_states[0].shape)
         #print(lstm_states[0].reshape(-1).shape)
         #print(np.array([lstm_states[0].reshape(-1),lstm_states[1].reshape(-1)]).shape)
-        lstm_states_arr = np.array([[lstm_states[0].reshape(-1), lstm_states[1].reshape(-1)]])
+        # assuming n_env = 1. no current support for multi-env LSTM replay buffer
+        lstm_states_arr = np.array([[lstm_states[0][0], lstm_states[1][0]]])
+        # this array should match [ n_envs, D, 2, lstm_hidden_size]
         #print(lstm_states_arr.shape)
-        # this is shape [1,2,hidden_size]
         self.lstm_states[self.pos] = np.array(lstm_states_arr).copy()
         # self.lstm_states should match shape of obs/new_obs
         # [ n_envs, lstm_shape ] 
