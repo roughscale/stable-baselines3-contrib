@@ -562,7 +562,7 @@ class DeepRecurrentQNetwork(DQN):
             reward_,
             dones,
             infos,
-            (self._last_lstm_states[0].numpy(),self._last_lstm_states[1].numpy()) # convert tensor to numpy for buffer storage
+            (self._last_lstm_states[0].cpu().numpy(),self._last_lstm_states[1].cpu().numpy()) # convert tensor to numpy for buffer storage
         )
 
         self._last_obs = new_obs
