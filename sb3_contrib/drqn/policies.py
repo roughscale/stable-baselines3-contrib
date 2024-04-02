@@ -406,6 +406,16 @@ class DRQNPolicy(BasePolicy):
             **self.optimizer_kwargs,
         )
             
+        print("model params")
+        for name, param in self.named_parameters():
+            # each param is of type torch.nn.parameter.Parameter
+            print(name, param.shape)
+
+        print("optimizer")
+        print(dir(self.optimizer))
+        # this seems to be a list of nn.parameter
+        # print(self.optimizer.param_groups)
+
     def make_q_net(self) -> DRQNetwork:
         # Make sure we always have separate networks for features extractors etc
         net_args = self._update_features_extractor(self.net_args, features_extractor=None)

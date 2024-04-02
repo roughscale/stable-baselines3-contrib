@@ -230,13 +230,18 @@ class DeepRecurrentQNetwork(DQN):
 
                     # Avoid potential broadcast issue
                     next_q_values = next_q_values.reshape(-1, 1)
-                    #print("reshaped next q values {}".format(next_q_values.shape))
+                    #print("reshaped next q values")
+                    #print(next_q_values)
                     # 1-step TD target
                     # take the reward and dones for the last transition in the sequence
-                    #print("rewards shape {}".format(replay_data.rewards.shape))
-                    #print("dones shape {}".format(replay_data.dones.shape))
-                    #print("rewards reshape {}".format(replay_data.rewards[:,-1].reshape(-1,1)))
-                    #print("dones reshape {}".format(replay_data.dones[:,-1].reshape(-1,1)))
+                    print("rewards shape")
+                    print(replay_data.rewards)
+                    #print("dones shape")
+                    #print(replay_data.dones)
+                    #print("rewards reshape")
+                    #print(replay_data.rewards[:,-1].reshape(-1,1))
+                    #print("dones reshape")
+                    #print(replay_data.dones[:,-1].reshape(-1,1))
                     target_q_values = replay_data.rewards[:,-1].reshape(-1,1) + (1 - replay_data.dones[:,-1].reshape(-1,1)) * self.gamma * next_q_values
                     #print("target q values shape {}".format(target_q_values.shape))
 
@@ -284,7 +289,7 @@ class DeepRecurrentQNetwork(DQN):
                 if isinstance(self.replay_buffer, PrioritizedReplaySequenceBuffer):
                   # TD error in absolute value
                   td_error = th.abs(current_q_values - target_q_values)
-                  #print(td_error)
+                  print(td_error)
                   #print(replay_data.weights)
                   # Weighted Huber loss using importance sampling weights
                   loss = (replay_data.weights * th.where(td_error < 1.0, 0.5 * td_error**2, td_error - 0.5)).mean()
@@ -303,6 +308,14 @@ class DeepRecurrentQNetwork(DQN):
                 # Optimize the policy
                 self.policy.optimizer.zero_grad()
                 loss.backward()
+                # 
+                print("loss backward")
+                #print(dir(loss))
+                #print(current_q_values) gather backward grad
+                #print(target_q_values) no_grad
+                #print(actions) no grade
+                #print(td_error) abs_backward grad. does this matter if not in parameters?
+                #print(lstm_states) no grad
                 # only current_q_values has the grad_fn parameters set.
                 # so backprop will only apply to q_net (and not the target_q_net)
 

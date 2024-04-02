@@ -47,9 +47,11 @@ class DuelingDRQNModule(nn.Module):
         # the second linear layer is simply an output layer
         self.activation_fn = activation_fn
         self.val_linear_layers = nn.Sequential(
+               activation_fn(),
                nn.Linear(lstm_hidden_size, 1)
         )
         self.adv_linear_layers = nn.Sequential(
+               activation_fn(),
                nn.Linear(lstm_hidden_size, output_dim)
         )
 
