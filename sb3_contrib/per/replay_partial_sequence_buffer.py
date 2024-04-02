@@ -61,13 +61,12 @@ class ReplayPartialSequenceBuffer(ReplayBuffer):
         # disable lstm_hidden_size for now
         # lets assume lstm_hidden_state is the same as obs_shape
         lstm_hidden_size = self.obs_shape[0]
-        print(self.obs_shape)
-        print(lstm_hidden_size)
+        #print(self.obs_shape)
+        #print(lstm_hidden_size)
         # lstm state outputs from pytorch is normally a 2 element tuple of tensors (h0,c0)
         # we convert this to 2-dim ndarray
         self.lstm_shape = np.array((lstm_num_layers,2,lstm_hidden_size))
-        print(self.lstm_shape)
-        print(self.lstm_shape)
+        #print(self.lstm_shape)
         #print(self.lstm_shape.shape)
         #if False: # disable for now
         #  self.lstm_states = (

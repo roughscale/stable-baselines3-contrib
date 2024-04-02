@@ -234,8 +234,8 @@ class DeepRecurrentQNetwork(DQN):
                     #print(next_q_values)
                     # 1-step TD target
                     # take the reward and dones for the last transition in the sequence
-                    print("rewards shape")
-                    print(replay_data.rewards)
+                    #print("rewards shape")
+                    #print(replay_data.rewards)
                     #print("dones shape")
                     #print(replay_data.dones)
                     #print("rewards reshape")
@@ -289,7 +289,7 @@ class DeepRecurrentQNetwork(DQN):
                 if isinstance(self.replay_buffer, PrioritizedReplaySequenceBuffer):
                   # TD error in absolute value
                   td_error = th.abs(current_q_values - target_q_values)
-                  print(td_error)
+                  #print(td_error)
                   #print(replay_data.weights)
                   # Weighted Huber loss using importance sampling weights
                   loss = (replay_data.weights * th.where(td_error < 1.0, 0.5 * td_error**2, td_error - 0.5)).mean()

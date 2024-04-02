@@ -45,11 +45,11 @@ class PrioritizedReplaySequenceBuffer(ReplayPartialSequenceBuffer):
         buffer_size: int,
         observation_space: spaces.Space,
         action_space: spaces.Space,
-        lstm_num_layers = 1,
-        lstm_hidden_size = None,
         device: Union[th.device, str] = "auto",
         n_envs: int = 1,
         optimize_memory_usage: bool = False,
+        lstm_hidden_size = None,
+        lstm_num_layers = 1,
         alpha: float = 0.6,
         beta: float = 0.4,
         final_beta: float = 1.0,
@@ -109,48 +109,6 @@ class PrioritizedReplaySequenceBuffer(ReplayPartialSequenceBuffer):
 
         super().add(obs, next_obs, action, reward, done, infos, lstm_states)
 
-    # the following is an overridden version of the inherited add() method
-    def _add_disabled(
-        self,
-        obs: np.ndarray,
-        next_obs: np.ndarray,
-        action: np.ndarray,
-        reward: np.ndarray,
-        done: np.ndarray,
-        infos: List[Dict[str, Any]],
-        lstm_states: Tuple[np.ndarray]
-    ) -> None:
-        # Reshape needed when using multiple envs with discrete observations
-        # as numpy cannot broadcast (n_discrete,) to (n_discrete, 1)
-        if isinstance(self.observation_space, spaces.Discrete):
-            obs = obs.reshape((self.n_envs, *self.obs_shape))
-            next_obs = next_obs.reshape((self.n_envs, *self.obs_shape))
-
-        # Reshape to handle multi-dim and discrete action spaces, see GH #970 #1392
-        action = action.reshape((self.n_envs, self.action_dim))
-
-        # Copy to avoid modification by reference
-        self.observations[self.pos] = np.array(obs).copy()
-
-        if self.optimize_memory_usage:
-            self.observations[(self.pos + 1) % self.buffer_size] = np.array(next_obs).copy()
-        else:
-            self.next_observations[self.pos] = np.array(next_obs).copy()
-
-        self.actions[self.pos] = np.array(action).copy()
-        self.rewards[self.pos] = np.array(reward).copy()
-        self.dones[self.pos] = np.array(done).copy()
-        lstm_states_arr = np.array([[lstm_states[0].reshape(-1), lstm_states[1].reshape(-1)]])
-        self.lstm_states[self.pos] = np.array(lstm_states_arr).copy()
-
-        if self.handle_timeout_termination:
-            self.timeouts[self.pos] = np.array([info.get("TimeLimit.truncated", False) for info in infos])
-
-        self.pos += 1
-        if self.pos == self.buffer_size:
-            self.full = True
-            self.pos = 0
-
     # adapted from HER
     def sample(self, batch_size: int, n_prev_seq: int = 10, env: Optional[VecNormalize] = None) -> ReplayBufferSamples:
         """
@@ -205,8 +163,9 @@ class PrioritizedReplaySequenceBuffer(ReplayPartialSequenceBuffer):
 
         episode_starts = self.ep_start[batch_indices, env_indices]  # this should return a batch_size array of start pos
 
-        # now we want to return N steps from the batch index
-        seq_start = batch_indices - n_prev_seq
+        # now we want to return N-1 steps from the batch index
+        # N-1 as we need to include the sampled index
+        seq_start = batch_indices - (n_prev_seq - 1)
 
         # ensure seq_start isn't before episode start.
         seq_starts = np.maximum(seq_start,episode_starts)
@@ -217,7 +176,8 @@ class PrioritizedReplaySequenceBuffer(ReplayPartialSequenceBuffer):
         # first loop is to retrieve sequences and determine max sequence length
         for ep in range(batch_size):
 
-           seq_idxs = np.arange(seq_starts[ep],batch_indices[ep]) % self.buffer_size
+           # need to include the sampled index
+           seq_idxs = np.arange(seq_starts[ep],(batch_indices[ep]+1)) % self.buffer_size
            
            # edge case if sample index 0 is selected with episode starting at same position
            if len(seq_idxs) == 0:
