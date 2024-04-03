@@ -246,7 +246,6 @@ class DRQNetwork(BasePolicy):
         # perhaps try without and then try with.
         # the second linear layer is simply an output layer
         linear_layers = nn.Sequential(
-               self.activation_fn(),
                nn.Linear(lstm_hidden_size, action_dim)
         )
         # the following adds an MLP as a linear layer

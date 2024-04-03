@@ -158,8 +158,8 @@ class PrioritizedReplaySequenceBuffer(ReplayPartialSequenceBuffer):
         env_indices = np.zeros(batch_size, dtype=np.uint32)
         batch_indices = sample_indices
 
-        print("prioritized sample indices")
-        print(batch_indices)
+        #print("prioritized sample indices")
+        #print(batch_indices)
 
         episode_starts = self.ep_start[batch_indices, env_indices]  # this should return a batch_size array of start pos
 
