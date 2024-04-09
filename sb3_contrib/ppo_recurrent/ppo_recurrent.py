@@ -11,7 +11,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
 from stable_baselines3.common.policies import BasePolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
-from stable_baselines3.common.utils import explained_variance, get_schedule_fn, obs_as_tensor, safe_mean, configure_logger
+from stable_baselines3.common.utils import explained_variance, get_schedule_fn, obs_as_tensor, safe_mean
 from stable_baselines3.common.vec_env import VecEnv
 
 from sb3_contrib.common.recurrent.buffers import RecurrentDictRolloutBuffer, RecurrentRolloutBuffer
@@ -143,10 +143,6 @@ class RecurrentPPO(OnPolicyAlgorithm):
         self.set_random_seed(self.seed)
 
         buffer_cls = RecurrentDictRolloutBuffer if isinstance(self.observation_space, spaces.Dict) else RecurrentRolloutBuffer
-
-        # set up logger if no logger was passed
-        if not self._custom_logger:
-          self._logger = configure_logger(self.verbose, self.tensorboard_log, "run" , True)
 
         self.policy = self.policy_class(
             self.observation_space,

@@ -10,7 +10,7 @@ from stable_baselines3.common.distributions import kl_divergence
 from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
 from stable_baselines3.common.policies import ActorCriticPolicy, BasePolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, RolloutBufferSamples, Schedule
-from stable_baselines3.common.utils import explained_variance, configure_logger
+from stable_baselines3.common.utils import explained_variance
 from torch import nn
 from torch.nn import functional as F
 
@@ -162,10 +162,6 @@ class TRPO(OnPolicyAlgorithm):
         self.target_kl = target_kl
         self.n_critic_updates = n_critic_updates
         self.sub_sampling_factor = sub_sampling_factor
-
-        # set up logger if no logger was passed
-        if not self._custom_logger:
-          self._logger = configure_logger(self.verbose, self.tensorboard_log, "run" , True)
 
         if _init_setup_model:
             self._setup_model()
