@@ -63,19 +63,19 @@ class DuelingDRQNModule(nn.Module):
                 # batch of 1
                 features = features.reshape(1,*features.shape)
 
-        #print("lstm_states h0 shape: {}".format(lstm_states[0].shape))
-        d_dim,b_dim,h_dim = lstm_states[0].shape
-        if d_dim != self.lstm_layers.num_layers:
+        if lstm_states is not None:
+          #print("lstm_states h0 shape: {}".format(lstm_states[0].shape))
+          d_dim,b_dim,h_dim = lstm_states[0].shape
+          if d_dim != self.lstm_layers.num_layers:
             # wrong shape. This happens with the initial zero h0,c0.
             h0 = lstm_states[0].reshape(b_dim,d_dim,h_dim)
             c0 = lstm_states[1].reshape(b_dim,d_dim,h_dim)
-        else:
+          else:
             h0 = lstm_states[0]
             c0 = lstm_states[1]
+          lstm_states = (h0,c0)
 
-        #print("features shape: {}".format(features.shape))
-        #print("h0 shape: {}".format(h0[0].shape))
-        lstm_out, lstm_hidden_state = self.lstm_layers(features, (h0,c0))
+        lstm_out, lstm_hidden_state = self.lstm_layers(features, lstm_states)
 
         if lstm_hidden_state[0].dim() > 2:
               # we should use the last layers h0
