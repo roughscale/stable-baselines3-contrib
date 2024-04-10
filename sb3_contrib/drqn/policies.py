@@ -111,33 +111,30 @@ class DRQNModule(nn.Module):
             # it needs to be in [ D, B, dim]
             # we will use n_env to be used as a batch of 1
             #print(lstm_states[0].shape)
-            pass
         
-        # not sure why lstm_state is coming in with different shapes
-        # we assume h0 and c0 have same shape
-        d_dim,b_dim,h_dim = lstm_states[0].shape
-        if d_dim != self.lstm_layers.num_layers:
-            #print("wrong shape")
-            #print(lstm_states[0].shape)
-            # wrong shape. This happens with the initial zero h0,c0.
-            h0 = lstm_states[0].reshape(b_dim,d_dim,h_dim)
-            c0 = lstm_states[1].reshape(b_dim,d_dim,h_dim)
-        else:
-            #print("right shape")
-            #print(lstm_states[0].shape)
-            h0 = lstm_states[0]
-            c0 = lstm_states[1]
-        # no need for this. lstm_states is in the right shape (for single batch)
-        #if lstm_states[0].dim() == 3:
-        #    #error
-        #    pass
-        #b_dim,d_dim,h_dim = lstm_states[0].shape 
-        #h0 = lstm_states[0].reshape(d_dim, b_dim, h_dim)
-        #c0 = lstm_states[1].reshape(d_dim, b_dim, h_dim)
-        #print(h0.shape)
-        # otherwise lstm_state is in proper shape (D, B, dim)
-        # (h0,c0) should now be in ([D, B=1, dim],[D, B=1, dim] shape
-        lstm_out, lstm_hidden_state = self.lstm_layers(features, (h0,c0))
+            # not sure why lstm_state is coming in with different shapes
+            # we assume h0 and c0 have same shape
+            d_dim,b_dim,h_dim = lstm_states[0].shape
+            if d_dim != self.lstm_layers.num_layers:
+              #print("wrong shape")
+              #print(lstm_states[0].shape)
+              # wrong shape. This happens with the initial zero h0,c0.
+              h0 = lstm_states[0].reshape(b_dim,d_dim,h_dim)
+              c0 = lstm_states[1].reshape(b_dim,d_dim,h_dim)
+            else:
+              #print("right shape")
+              #print(lstm_states[0].shape)
+              h0 = lstm_states[0]
+              c0 = lstm_states[1]
+            lstm_states = (h0,c0)
+            # no need for this. lstm_states is in the right shape (for single batch)
+            #b_dim,d_dim,h_dim = lstm_states[0].shape 
+            #h0 = lstm_states[0].reshape(d_dim, b_dim, h_dim)
+            #c0 = lstm_states[1].reshape(d_dim, b_dim, h_dim)
+            #print(h0.shape)
+            # otherwise lstm_state is in proper shape (D, B, dim)
+            # (h0,c0) should now be in ([D, B=1, dim],[D, B=1, dim] shape
+        lstm_out, lstm_hidden_state = self.lstm_layers(features, lstm_states)
         # for batched input lstm_out would be [N, L, out_dim]
         # otherwise [L, out_dim]
         # 
