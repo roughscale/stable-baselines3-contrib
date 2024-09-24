@@ -251,4 +251,4 @@ class PrioritizedReplaySequenceBuffer(ReplayPartialSequenceBuffer):
             # Update max priority for new samples
             self.max_priority = max(self.max_priority, priority)
 
-        print("update_priorities: max_priority: {}".format(self.max_priority))
+        #print("update_priorities: max_priority: {}".format(self.max_priority))

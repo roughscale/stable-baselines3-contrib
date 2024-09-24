@@ -309,7 +309,7 @@ class DeepRecurrentQNetwork(DQN):
                 self.policy.optimizer.zero_grad()
                 loss.backward()
                 # 
-                print("loss backward")
+                #print("loss backward")
                 #print(dir(loss))
                 #print(current_q_values) gather backward grad
                 #print(target_q_values) no_grad
@@ -326,8 +326,8 @@ class DeepRecurrentQNetwork(DQN):
                 self.policy.optimizer.step()
                 # weights after optimisation
                 #print(self.q_net.state_dict())
-                print("loss")
-                print(loss)
+                #print("loss")
+                #print(loss)
 
         # Increase update counter
         self._n_updates += gradient_steps
@@ -441,7 +441,7 @@ class DeepRecurrentQNetwork(DQN):
                         self._dump_logs()
 
                     # return lstm state
-                    print("reset self._last_lstm_states")
+                    #print("reset self._last_lstm_states")
                     self._last_lstm_states = (
                       th.zeros(self.n_envs, *self.single_hidden_state_shape, device=self.device),
                       th.zeros(self.n_envs, *self.single_hidden_state_shape, device=self.device),
