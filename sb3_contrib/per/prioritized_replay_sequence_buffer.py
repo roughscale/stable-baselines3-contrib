@@ -120,7 +120,7 @@ class PrioritizedReplaySequenceBuffer(ReplayPartialSequenceBuffer):
         """
 
         leaf_nodes_indices = np.zeros(batch_size, dtype=np.uint32)
-        priorities = np.zeros((batch_size, 1))
+        priorities = np.zeros((batch_size, 1), dtype=np.float32)
         sample_indices = np.zeros(batch_size, dtype=np.uint32)
 
         # To sample a minibatch of size k, the range [0, total_sum] is divided equally into k ranges.
@@ -146,11 +146,11 @@ class PrioritizedReplaySequenceBuffer(ReplayPartialSequenceBuffer):
         #print(sample_indices)
         # probability of sampling transition i as P(i) = p_i^alpha / \sum_{k} p_k^alpha
         # where p_i > 0 is the priority of transition i.
-        probs = priorities / self.tree.total_sum
+        probs = priorities / np.float32(self.tree.total_sum)
 
         # Importance sampling weights.
         # All weights w_i were scaled so that max_i w_i = 1.
-        weights = (self.size() * probs) ** -self.beta
+        weights = np.float32((self.size()) * probs) ** np.float32(-self.beta)
         weights = weights / weights.max()
 
         # TODO: add proper support for multi env
