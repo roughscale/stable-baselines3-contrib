@@ -183,21 +183,24 @@ class ReplayPartialSequenceBuffer(ReplayBuffer):
         #print(self.lstm_states[self.pos].shape)
         #self.lstm_states[self.pos] = np.array(lstm_states).copy()
 
-        # set lstm_states to zero
-        # lstm_states will be a 2 element tuple of size [D, lstm_hidden_size]
-        # the D = 1 * num_lstm_layers for unidirectoral and 2 * num_lstm_layers for bidirectional
-        # assume uni-directional
-        # we need to shape it as ndarray [ n_envs, D, 2, lstm_hidden_size ]
-        # convert tuple to ndarray
-        #print("lstm states shape")
-        #print(lstm_states[0].shape)
-        #print(lstm_states[0].reshape(-1).shape)
-        #print(np.array([lstm_states[0].reshape(-1),lstm_states[1].reshape(-1)]).shape)
-        # assuming n_env = 1. no current support for multi-env LSTM replay buffer
-        lstm_states_arr = np.array([[lstm_states[0][0], lstm_states[1][0]]])
-        # this array should match [ n_envs, D, 2, lstm_hidden_size]
-        #print(lstm_states_arr.shape)
-        self.lstm_states[self.pos] = np.array(lstm_states_arr).copy()
+        # Store LSTM states
+        # lstm_states is a tuple of (h_state, c_state) from PyTorch LSTM
+        # Input format: (num_layers, batch_size, hidden_size) for each state
+        # Storage format: (n_envs, num_layers, 2, hidden_size)
+        # where 2 represents [h_state, c_state] stacked
+
+        # Assuming n_envs = 1 (single environment, batch_size = 1)
+        # Extract states for the first (and only) environment
+        h_state = lstm_states[0][:, 0, :]  # (num_layers, hidden_size)
+        c_state = lstm_states[1][:, 0, :]  # (num_layers, hidden_size)
+
+        # Stack h and c states: (num_layers, 2, hidden_size)
+        lstm_states_stacked = np.stack([h_state, c_state], axis=1)
+
+        # Add n_envs dimension: (1, num_layers, 2, hidden_size)
+        lstm_states_arr = lstm_states_stacked[np.newaxis, ...]
+
+        self.lstm_states[self.pos] = lstm_states_arr.copy()
         # self.lstm_states should match shape of obs/new_obs
         # [ n_envs, lstm_shape ] 
 
