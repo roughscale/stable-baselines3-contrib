@@ -16,6 +16,8 @@ from stable_baselines3.common.torch_layers import (
 from stable_baselines3.common.type_aliases import Schedule
 from stable_baselines3.common.utils import get_device, is_vectorized_observation, obs_as_tensor
 
+from sb3_contrib.drqn.lstm_utils import LSTMStateManager
+
 # subclass torch layers to inspect internals
 # may need to implement super to inherit. what are the init params?
 class DRQNLSTM(nn.LSTM):
@@ -73,6 +75,12 @@ class DRQNModule(nn.Module):
         self.activation_fn = activation_fn
         self.linear_layers = linear_layers
 
+        # Initialize LSTM state manager for consistent shape handling
+        self.lstm_state_manager = LSTMStateManager(
+            num_layers=lstm_layers.num_layers,
+            hidden_size=lstm_layers.hidden_size
+        )
+
     def forward(self, features: th.Tensor, lstm_states: Tuple[th.Tensor]) -> th.Tensor:
         #print("DRQNModule forward")
         #print("input shape")
@@ -104,36 +112,9 @@ class DRQNModule(nn.Module):
         # this assumption won't hold for multi-env input
 
         if lstm_states is not None:
-            #print("input lstm states")
-            #print(type(lstm_states))
-            #print(len(lstm_states))
-            # the following is [D, n_env, dim]
-            # it needs to be in [ D, B, dim]
-            # we will use n_env to be used as a batch of 1
-            #print(lstm_states[0].shape)
-        
-            # not sure why lstm_state is coming in with different shapes
-            # we assume h0 and c0 have same shape
-            d_dim,b_dim,h_dim = lstm_states[0].shape
-            if d_dim != self.lstm_layers.num_layers:
-              #print("wrong shape")
-              #print(lstm_states[0].shape)
-              # wrong shape. This happens with the initial zero h0,c0.
-              h0 = lstm_states[0].reshape(b_dim,d_dim,h_dim)
-              c0 = lstm_states[1].reshape(b_dim,d_dim,h_dim)
-            else:
-              #print("right shape")
-              #print(lstm_states[0].shape)
-              h0 = lstm_states[0]
-              c0 = lstm_states[1]
-            lstm_states = (h0,c0)
-            # no need for this. lstm_states is in the right shape (for single batch)
-            #b_dim,d_dim,h_dim = lstm_states[0].shape 
-            #h0 = lstm_states[0].reshape(d_dim, b_dim, h_dim)
-            #c0 = lstm_states[1].reshape(d_dim, b_dim, h_dim)
-            #print(h0.shape)
-            # otherwise lstm_state is in proper shape (D, B, dim)
-            # (h0,c0) should now be in ([D, B=1, dim],[D, B=1, dim] shape
+            # Validate and fix LSTM state shapes to standard PyTorch format
+            # Expected: (num_layers, batch_size, hidden_size) for both h and c
+            lstm_states = self.lstm_state_manager.validate_and_fix_shape(lstm_states)
         lstm_out, lstm_hidden_state = self.lstm_layers(features, lstm_states)
         # for batched input lstm_out would be [N, L, out_dim]
         # otherwise [L, out_dim]

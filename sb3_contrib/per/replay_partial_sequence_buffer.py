@@ -296,12 +296,14 @@ class ReplayPartialSequenceBuffer(ReplayBuffer):
            # the following returns the entire episode
            #sample_idxs = np.arange(episode_starts[ep],episode_ends[ep]) % self.buffer_size
            #
-           # the following returns the partial episode up until transition
-           seq_idxs = np.arange(seq_starts[ep],batch_indices[ep]) % self.buffer_size
+           # the following returns the partial episode up until and INCLUDING the sampled transition
+           # Fixed: Changed batch_indices[ep] to (batch_indices[ep]+1) to include the sampled index
+           # See Issue #6 in DRQN_STABILITY_RECOMMENDATIONS.md
+           seq_idxs = np.arange(seq_starts[ep],(batch_indices[ep]+1)) % self.buffer_size
            #print(seq_idxs)
            #print("seq idxs shape")
            #print(seq_idxs.shape)
-           
+
            # edge case if sample index 0 is selected with episode starting at same position
            if len(seq_idxs) == 0:
                seq_idxs = np.array([batch_indices[ep]])

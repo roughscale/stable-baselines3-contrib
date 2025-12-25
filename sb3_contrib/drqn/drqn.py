@@ -27,6 +27,7 @@ from sb3_contrib.per.prioritized_replay_sequence_buffer import PrioritizedReplay
 
 
 from sb3_contrib.drqn.policies import DRQNPolicy
+from sb3_contrib.drqn.lstm_utils import LSTMStateManager
 
 SelfDRQN = TypeVar("SelfDRQN", bound="DRQN")
 
@@ -68,6 +69,9 @@ class DeepRecurrentQNetwork(DQN):
     :param device: Device (cpu, cuda, ...) on which the code should be run.
         Setting it to auto, the code will be run on the GPU if possible.
     :param _init_setup_model: Whether or not to build the network at the creation of the instance
+    :param zero_init_lstm_states: If True, use zero initial LSTM states (DRQN Random Updates strategy).
+        If False, use stored LSTM states from replay buffer (Sequential Updates strategy).
+        Default True. See DRQN paper section 3.2 for details.
     """
 
     policy_aliases: Dict[str, Type[BasePolicy]] = {
@@ -104,6 +108,7 @@ class DeepRecurrentQNetwork(DQN):
         seed: Optional[int] = None,
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
+        zero_init_lstm_states: bool = True,
     ):
         super().__init__(
             policy,
@@ -133,22 +138,29 @@ class DeepRecurrentQNetwork(DQN):
             _init_setup_model,
         )
 
-        # Number of previous transitions to sample from experience replay 
+        # Number of previous transitions to sample from experience replay
         self.n_prev_seq = n_prev_seq
+        # Use zero initial LSTM states (DRQN Random Updates) or stored states (Sequential Updates)
+        self.zero_init_lstm_states = zero_init_lstm_states
         #print(type(self.policy)) # DRQNPolicy
         #print(type(self.q_net)) # DRQNetwork
         #print(type(self.q_net_target)) #DRQNetwork
 
     def _setup_model(self) -> None:
         super()._setup_model()
-        
-        # NOTE: implement for 1 env at the moment
-        #self.single_hidden_state_shape = (self.policy.lstm_num_layers, self.n_envs, self.policy.lstm_hidden_size)
-        self.single_hidden_state_shape = (self.policy.lstm_num_layers, self.policy.lstm_hidden_size)
-        self._last_lstm_states = (
-                th.zeros(self.n_envs, *self.single_hidden_state_shape, device=self.device),
-                th.zeros(self.n_envs, *self.single_hidden_state_shape, device=self.device),
-            )
+
+        # Initialize LSTM state manager for consistent state handling
+        self.lstm_state_manager = LSTMStateManager(
+            num_layers=self.policy.lstm_num_layers,
+            hidden_size=self.policy.lstm_hidden_size
+        )
+
+        # Create zero initial LSTM states in standard PyTorch format
+        # Shape: (num_layers, n_envs, hidden_size)
+        self._last_lstm_states = self.lstm_state_manager.create_zero_states(
+            batch_size=self.n_envs,
+            device=self.device
+        )
 
         #print(type(self.replay_buffer))
 
@@ -193,26 +205,44 @@ class DeepRecurrentQNetwork(DQN):
 
                 #print("train")
                 #print("sampled replay sequence lengths {}".format(replay_data.lengths))
-                # what is the effect of th.no_grad if the sequence needs to keep gradient?
-                with th.no_grad():
 
-                    # convert lstm state to Tuple of tensors
-                    # replay_data.lstm_states should be in [ B, env, L, 2, lstm_hidden_size ] shape
-                    #print("replay data lstm states shape {}".format(replay_data.lstm_states.shape))
-                    # we only need the first hidden state of the sequence
-                    # and only the first env (we don't support multi-env LSTM DQN)
-                    # this array should match [ batch, n_envs, D, 2, lstm_hidden_size]
-                    lstm_states = replay_data.lstm_states[:, 0, :, :, :]
-                    #print(lstm_states.shape)
-                    b_dim,d_dim,t_dim,h_dim = lstm_states.shape
-                    lstm_states = lstm_states.reshape(t_dim, d_dim, b_dim, h_dim)
-                    # this should now be in shape [2, D, B, lstm_hidden size]
-                    h0 = lstm_states[0]
-                    c0 = lstm_states[1]
-                    #print(h0.shape)
-                    #print(h0.reshape(1,*h0.shape).shape) # should be [1, B, lstm_hidden_size]
-                    #print(c0.reshape(1,*c0.shape).shape) # should be [1, B, lstm_hidden_size]
-                    lstm_state = (h0,c0)
+                # Prepare LSTM initial states based on update strategy
+                if self.zero_init_lstm_states:
+                    # DRQN Random Updates: Zero initial states (recommended, more stable)
+                    # See DRQN paper section 3.2 and analysis/issue_01_why_zero_states.md
+                    lstm_state = (
+                        th.zeros(
+                            self.policy.lstm_num_layers,
+                            batch_size,
+                            self.policy.lstm_hidden_size,
+                            device=self.device
+                        ),
+                        th.zeros(
+                            self.policy.lstm_num_layers,
+                            batch_size,
+                            self.policy.lstm_hidden_size,
+                            device=self.device
+                        )
+                    )
+                else:
+                    # DRQN Sequential Updates: Use stored LSTM states from replay buffer
+                    # Note: This can cause representation mismatch issues (see Issue #1)
+                    # replay_data.lstm_states shape: [batch, n_envs, num_layers, 2, hidden_size]
+                    # Extract first env (we don't support multi-env LSTM DQN)
+                    lstm_states = replay_data.lstm_states[:, 0, :, :, :]  # [batch, num_layers, 2, hidden_size]
+
+                    # Split h and c states
+                    h_state = lstm_states[:, :, 0, :].contiguous()  # [batch, num_layers, hidden_size]
+                    c_state = lstm_states[:, :, 1, :].contiguous()  # [batch, num_layers, hidden_size]
+
+                    # Transpose to PyTorch LSTM format: [num_layers, batch, hidden_size]
+                    h_state = h_state.transpose(0, 1).contiguous()
+                    c_state = c_state.transpose(0, 1).contiguous()
+
+                    # Validate and fix shape using state manager
+                    lstm_state = self.lstm_state_manager.validate_and_fix_shape((h_state, c_state))
+
+                with th.no_grad():
                     # convert padded tensors to padded sequence
                     next_observations = pack_padded_sequence(replay_data.next_observations, replay_data.lengths, batch_first=True, enforce_sorted=False)
 
