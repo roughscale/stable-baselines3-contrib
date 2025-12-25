@@ -155,6 +155,11 @@ class DeepRecurrentQNetwork(DQN):
             hidden_size=self.policy.lstm_hidden_size
         )
 
+        # Store shape for later use (needed for LSTM state resets)
+        # Used as: th.zeros(self.n_envs, *self.single_hidden_state_shape)
+        # Results in shape: (n_envs, num_layers, hidden_size)
+        self.single_hidden_state_shape = (self.policy.lstm_num_layers, self.policy.lstm_hidden_size)
+
         # Create zero initial LSTM states in standard PyTorch format
         # Shape: (num_layers, n_envs, hidden_size)
         self._last_lstm_states = self.lstm_state_manager.create_zero_states(
