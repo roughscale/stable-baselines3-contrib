@@ -73,6 +73,8 @@ class DoubleDQN(DQN):
                 next_q_values_online = self.q_net(replay_data.next_observations)
                 # Select action with online network
                 _, next_actions_online = next_q_values_online.max(dim=1)
+                # Reshape indices for gather operation (batch_size,) -> (batch_size, 1)
+                next_actions_online = next_actions_online.unsqueeze(1)
                 # Estimate the q-values for the selected actions using target q network
                 next_q_values = th.gather(next_q_values, dim=1, index=next_actions_online)
 
