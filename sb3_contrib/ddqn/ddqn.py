@@ -111,7 +111,7 @@ class DoubleDQN(DQN):
         state: Optional[Tuple[np.ndarray, ...]] = None,
         episode_start: Optional[np.ndarray] = None,
         deterministic: bool = False,
-    ) -> Tuple[np.ndarray, Optional[Tuple[np.ndarray, ...]]]:
+    ) -> Tuple[np.ndarray, Optional[Tuple[np.ndarray, ...]], bool]:
         """
         Overrides the base_class predict function to include epsilon-greedy exploration.
 
@@ -119,9 +119,10 @@ class DoubleDQN(DQN):
         :param state: The last states (can be None, used in recurrent policies)
         :param episode_start: The last masks (can be None, used in recurrent policies)
         :param deterministic: Whether or not to return deterministic actions.
-        :return: the model's action and the next state
-            (used in recurrent policies)
+        :return: the model's action, the next state (used in recurrent policies),
+            and whether the action was computed (True) or randomly sampled (False)
         """
+        computed = True
         if not deterministic and np.random.rand() < self.exploration_rate:
             if is_vectorized_observation(maybe_transpose(observation, self.observation_space), self.observation_space):
                 if isinstance(observation, dict):
@@ -131,9 +132,10 @@ class DoubleDQN(DQN):
                 action = np.array([self.action_space.sample() for _ in range(n_batch)])
             else:
                 action = np.array(self.action_space.sample())
+            computed = False
         else:
             action, state = self.policy.predict(observation, state, episode_start, deterministic)
-        return action, state
+        return action, state, computed
 
     def learn(
         self: SelfDQN,
