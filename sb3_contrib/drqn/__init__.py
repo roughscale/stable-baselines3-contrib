@@ -1,1 +1,1 @@
-from sb3_contrib.drqn.drqn import DeepRecurrentQNetwork
+from sb3_contrib.drqn.drqn import DeepRecurrentQNetwork, DoubleDRQN
