@@ -109,6 +109,7 @@ class DeepRecurrentQNetwork(DQN):
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
         zero_init_lstm_states: bool = True,
+        use_full_episodes: bool = False,
     ):
         super().__init__(
             policy,
@@ -142,6 +143,8 @@ class DeepRecurrentQNetwork(DQN):
         self.n_prev_seq = n_prev_seq
         # Use zero initial LSTM states (DRQN Random Updates) or stored states (Sequential Updates)
         self.zero_init_lstm_states = zero_init_lstm_states
+        # Use full episode sequences (Sequential Bootstrapped Replay) or partial sequences
+        self.use_full_episodes = use_full_episodes
         #print(type(self.policy)) # DRQNPolicy
         #print(type(self.q_net)) # DRQNetwork
         #print(type(self.q_net_target)) #DRQNetwork
@@ -206,7 +209,7 @@ class DeepRecurrentQNetwork(DQN):
                 # where input is a sequence of transitions of variable lengths
                 # given by the replay_data.batch_lengths index
                 #
-                replay_data = self.replay_buffer.sample(batch_size, self.n_prev_seq, env=self._vec_normalize_env)  # type: ignore[union-attr]
+                replay_data = self.replay_buffer.sample(batch_size, self.n_prev_seq, env=self._vec_normalize_env, use_full_episodes=self.use_full_episodes)  # type: ignore[union-attr]
 
                 #print("train")
                 #print("sampled replay sequence lengths {}".format(replay_data.lengths))
@@ -716,7 +719,7 @@ class DoubleDRQN(DeepRecurrentQNetwork):
         for _ in range(gradient_steps):
             # this will sample the buffer and return a sequence of transitions
             # Sample replay buffer
-            replay_data = self.replay_buffer.sample(batch_size, self.n_prev_seq, env=self._vec_normalize_env)
+            replay_data = self.replay_buffer.sample(batch_size, self.n_prev_seq, env=self._vec_normalize_env, use_full_episodes=self.use_full_episodes)
 
             # convert lstm_states from replay buffer to torch tensors
             # in the shape (D, B, lstm_hidden_size) 2-tuple
