@@ -27,6 +27,7 @@ from sb3_contrib.per.prioritized_replay_sequence_buffer import PrioritizedReplay
 
 
 from sb3_contrib.drqn.policies import DRQNPolicy
+from sb3_contrib.drqn.lstm_utils import LSTMStateManager
 
 SelfDRQN = TypeVar("SelfDRQN", bound="DRQN")
 
@@ -68,6 +69,9 @@ class DeepRecurrentQNetwork(DQN):
     :param device: Device (cpu, cuda, ...) on which the code should be run.
         Setting it to auto, the code will be run on the GPU if possible.
     :param _init_setup_model: Whether or not to build the network at the creation of the instance
+    :param zero_init_lstm_states: If True, use zero initial LSTM states (DRQN Random Updates strategy).
+        If False, use stored LSTM states from replay buffer (Sequential Updates strategy).
+        Default True. See DRQN paper section 3.2 for details.
     """
 
     policy_aliases: Dict[str, Type[BasePolicy]] = {
@@ -104,6 +108,8 @@ class DeepRecurrentQNetwork(DQN):
         seed: Optional[int] = None,
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
+        zero_init_lstm_states: bool = True,
+        use_full_episodes: bool = False,
     ):
         super().__init__(
             policy,
@@ -133,22 +139,36 @@ class DeepRecurrentQNetwork(DQN):
             _init_setup_model,
         )
 
-        # Number of previous transitions to sample from experience replay 
+        # Number of previous transitions to sample from experience replay
         self.n_prev_seq = n_prev_seq
+        # Use zero initial LSTM states (DRQN Random Updates) or stored states (Sequential Updates)
+        self.zero_init_lstm_states = zero_init_lstm_states
+        # Use full episode sequences (Sequential Bootstrapped Replay) or partial sequences
+        self.use_full_episodes = use_full_episodes
         #print(type(self.policy)) # DRQNPolicy
         #print(type(self.q_net)) # DRQNetwork
         #print(type(self.q_net_target)) #DRQNetwork
 
     def _setup_model(self) -> None:
         super()._setup_model()
-        
-        # NOTE: implement for 1 env at the moment
-        #self.single_hidden_state_shape = (self.policy.lstm_num_layers, self.n_envs, self.policy.lstm_hidden_size)
+
+        # Initialize LSTM state manager for consistent state handling
+        self.lstm_state_manager = LSTMStateManager(
+            num_layers=self.policy.lstm_num_layers,
+            hidden_size=self.policy.lstm_hidden_size
+        )
+
+        # Store shape for later use (needed for LSTM state resets)
+        # Used as: th.zeros(self.n_envs, *self.single_hidden_state_shape)
+        # Results in shape: (n_envs, num_layers, hidden_size)
         self.single_hidden_state_shape = (self.policy.lstm_num_layers, self.policy.lstm_hidden_size)
-        self._last_lstm_states = (
-                th.zeros(self.n_envs, *self.single_hidden_state_shape, device=self.device),
-                th.zeros(self.n_envs, *self.single_hidden_state_shape, device=self.device),
-            )
+
+        # Create zero initial LSTM states in standard PyTorch format
+        # Shape: (num_layers, n_envs, hidden_size)
+        self._last_lstm_states = self.lstm_state_manager.create_zero_states(
+            batch_size=self.n_envs,
+            device=self.device
+        )
 
         #print(type(self.replay_buffer))
 
@@ -189,30 +209,48 @@ class DeepRecurrentQNetwork(DQN):
                 # where input is a sequence of transitions of variable lengths
                 # given by the replay_data.batch_lengths index
                 #
-                replay_data = self.replay_buffer.sample(batch_size, self.n_prev_seq, env=self._vec_normalize_env)  # type: ignore[union-attr]
+                replay_data = self.replay_buffer.sample(batch_size, self.n_prev_seq, env=self._vec_normalize_env, use_full_episodes=self.use_full_episodes)  # type: ignore[union-attr]
 
                 #print("train")
                 #print("sampled replay sequence lengths {}".format(replay_data.lengths))
-                # what is the effect of th.no_grad if the sequence needs to keep gradient?
-                with th.no_grad():
 
-                    # convert lstm state to Tuple of tensors
-                    # replay_data.lstm_states should be in [ B, env, L, 2, lstm_hidden_size ] shape
-                    #print("replay data lstm states shape {}".format(replay_data.lstm_states.shape))
-                    # we only need the first hidden state of the sequence
-                    # and only the first env (we don't support multi-env LSTM DQN)
-                    # this array should match [ batch, n_envs, D, 2, lstm_hidden_size]
-                    lstm_states = replay_data.lstm_states[:, 0, :, :, :]
-                    #print(lstm_states.shape)
-                    b_dim,d_dim,t_dim,h_dim = lstm_states.shape
-                    lstm_states = lstm_states.reshape(t_dim, d_dim, b_dim, h_dim)
-                    # this should now be in shape [2, D, B, lstm_hidden size]
-                    h0 = lstm_states[0]
-                    c0 = lstm_states[1]
-                    #print(h0.shape)
-                    #print(h0.reshape(1,*h0.shape).shape) # should be [1, B, lstm_hidden_size]
-                    #print(c0.reshape(1,*c0.shape).shape) # should be [1, B, lstm_hidden_size]
-                    lstm_state = (h0,c0)
+                # Prepare LSTM initial states based on update strategy
+                if self.zero_init_lstm_states:
+                    # DRQN Random Updates: Zero initial states (recommended, more stable)
+                    # See DRQN paper section 3.2 and analysis/issue_01_why_zero_states.md
+                    lstm_state = (
+                        th.zeros(
+                            self.policy.lstm_num_layers,
+                            batch_size,
+                            self.policy.lstm_hidden_size,
+                            device=self.device
+                        ),
+                        th.zeros(
+                            self.policy.lstm_num_layers,
+                            batch_size,
+                            self.policy.lstm_hidden_size,
+                            device=self.device
+                        )
+                    )
+                else:
+                    # DRQN Sequential Updates: Use stored LSTM states from replay buffer
+                    # Note: This can cause representation mismatch issues (see Issue #1)
+                    # replay_data.lstm_states shape: [batch, n_envs, num_layers, 2, hidden_size]
+                    # Extract first env (we don't support multi-env LSTM DQN)
+                    lstm_states = replay_data.lstm_states[:, 0, :, :, :]  # [batch, num_layers, 2, hidden_size]
+
+                    # Split h and c states
+                    h_state = lstm_states[:, :, 0, :].contiguous()  # [batch, num_layers, hidden_size]
+                    c_state = lstm_states[:, :, 1, :].contiguous()  # [batch, num_layers, hidden_size]
+
+                    # Transpose to PyTorch LSTM format: [num_layers, batch, hidden_size]
+                    h_state = h_state.transpose(0, 1).contiguous()
+                    c_state = c_state.transpose(0, 1).contiguous()
+
+                    # Validate and fix shape using state manager
+                    lstm_state = self.lstm_state_manager.validate_and_fix_shape((h_state, c_state))
+
+                with th.no_grad():
                     # convert padded tensors to padded sequence
                     next_observations = pack_padded_sequence(replay_data.next_observations, replay_data.lengths, batch_first=True, enforce_sorted=False)
 
@@ -603,4 +641,192 @@ class DeepRecurrentQNetwork(DQN):
             computed=False
         # add computed flag
         return action, state, computed
+
+
+class DoubleDRQN(DeepRecurrentQNetwork):
+    """
+    Double Deep Recurrent Q-Network (Double DRQN)
+
+    Extends DRQN with Double DQN to reduce maximization bias.
+
+    From van Hasselt et al. (2015):
+    "We therefore propose to evaluate the greedy policy according to the online
+    network, but using the target network to estimate its value."
+
+    The key modification is in the target Q-value computation:
+
+    Standard DRQN:
+        target = r + γ * max_a Q_target(s', a)
+
+    Double DRQN:
+        target = r + γ * Q_target(s', argmax_a Q_online(s', a))
+
+    This decouples action selection (online network) from action evaluation
+    (target network), significantly reducing overestimation bias that causes
+    divergence in recurrent networks.
+
+    Reference:
+        van Hasselt et al. (2015) - "Deep Reinforcement Learning with Double Q-learning"
+        https://arxiv.org/abs/1509.06461
+
+    :param policy: The policy model to use (DRQNPolicy, DuelingDRQNPolicy, ...)
+    :param env: The environment to learn from
+    :param learning_rate: The learning rate
+    :param buffer_size: Size of the replay buffer
+    :param learning_starts: How many steps before learning starts
+    :param batch_size: Minibatch size for each gradient update
+    :param n_prev_seq: Number of previous transitions to include in sequence
+    :param tau: Soft update coefficient (Polyak update)
+    :param gamma: Discount factor
+    :param train_freq: Update frequency
+    :param gradient_steps: How many gradient steps per rollout
+    :param replay_buffer_class: Replay buffer class
+    :param replay_buffer_kwargs: Keyword arguments for replay buffer
+    :param optimize_memory_usage: Enable memory efficient variant
+    :param target_update_interval: Update target network frequency
+    :param exploration_fraction: Fraction of training for exploration
+    :param exploration_initial_eps: Initial epsilon for exploration
+    :param exploration_final_eps: Final epsilon for exploration
+    :param max_grad_norm: Maximum norm for gradient clipping
+    :param stats_window_size: Window size for stats logging
+    :param tensorboard_log: Log directory for tensorboard
+    :param policy_kwargs: Additional arguments for policy
+    :param verbose: Verbosity level
+    :param seed: Random seed
+    :param device: Device (cpu, cuda, ...)
+    :param _init_setup_model: Whether to setup model on init
+    :param zero_init_lstm_states: Whether to use zero LSTM initial states
+    """
+
+    def train(self, gradient_steps: int, batch_size: int = 100) -> None:
+        """
+        Train the DRQN model using Double DQN update rule.
+
+        Overrides the standard DRQN train() method to implement Double DQN:
+        - Uses online network to select best actions
+        - Uses target network to evaluate selected actions
+        - Prevents maximization bias and Q-value overestimation
+
+        :param gradient_steps: Number of gradient steps
+        :param batch_size: Batch size for sampling from replay buffer
+        """
+        # Switch to train mode (this affects batch norm / dropout)
+        self.policy.set_training_mode(True)
+        # Update learning rate according to schedule
+        self._update_learning_rate(self.policy.optimizer)
+
+        losses = []
+        for _ in range(gradient_steps):
+            # this will sample the buffer and return a sequence of transitions
+            # Sample replay buffer
+            replay_data = self.replay_buffer.sample(batch_size, self.n_prev_seq, env=self._vec_normalize_env, use_full_episodes=self.use_full_episodes)
+
+            # convert lstm_states from replay buffer to torch tensors
+            # in the shape (D, B, lstm_hidden_size) 2-tuple
+            if not self.zero_init_lstm_states:
+                # DRQN Sequential Updates: Use stored LSTM states from replay buffer
+                # Note: This can cause representation mismatch issues (see Issue #1)
+                # replay_data.lstm_states shape: [batch, n_envs, num_layers, 2, hidden_size]
+                # Extract first env (we don't support multi-env LSTM DQN)
+                lstm_states = replay_data.lstm_states[:, 0, :, :, :]  # [batch, num_layers, 2, hidden_size]
+
+                # Split h and c states
+                h_state = lstm_states[:, :, 0, :].contiguous()  # [batch, num_layers, hidden_size]
+                c_state = lstm_states[:, :, 1, :].contiguous()  # [batch, num_layers, hidden_size]
+
+                # Transpose to PyTorch LSTM format: [num_layers, batch, hidden_size]
+                h_state = h_state.transpose(0, 1).contiguous()
+                c_state = c_state.transpose(0, 1).contiguous()
+
+                # Validate and fix shape using state manager
+                lstm_state = self.lstm_state_manager.validate_and_fix_shape((h_state, c_state))
+            else:
+                # DRQN Random Updates: Use zero initial LSTM states
+                # This is the recommended approach from the DRQN paper
+                # Avoids representation mismatch between old states and new network weights
+                lstm_state = self.lstm_state_manager.create_zero_states(
+                    batch_size=batch_size,
+                    device=self.device
+                )
+
+            with th.no_grad():
+                # convert padded tensors to padded sequence
+                next_observations = pack_padded_sequence(replay_data.next_observations, replay_data.lengths, batch_first=True, enforce_sorted=False)
+
+                # ============================================
+                # DOUBLE DQN MODIFICATION
+                # ============================================
+                # Standard DRQN would do:
+                #   next_q_values_target, _ = self.q_net_target(next_observations, lstm_state)
+                #   next_q_values, _ = next_q_values_target.max(dim=1)
+                #
+                # Double DRQN does:
+
+                # Step 1: Use ONLINE network to SELECT best actions
+                # The online network is being trained and may have errors, but we use it
+                # only for action selection, not value estimation
+                next_q_values_online, _ = self.q_net(next_observations, lstm_state)
+                # Select action with highest Q-value according to online network
+                next_actions = next_q_values_online.argmax(dim=1, keepdim=True)
+
+                # Step 2: Use TARGET network to EVALUATE selected actions
+                # The target network is updated slowly and is more stable
+                # We use it to estimate the value of the action selected by online network
+                next_q_values_target, _ = self.q_net_target(next_observations, lstm_state)
+                # Get Q-value of the selected action from target network
+                next_q_values = th.gather(next_q_values_target, dim=1, index=next_actions)
+                next_q_values = next_q_values.squeeze(1)
+
+                # ============================================
+                # END DOUBLE DQN MODIFICATION
+                # ============================================
+
+                # Avoid potential broadcast issue
+                next_q_values = next_q_values.reshape(-1, 1)
+
+                # 1-step TD target
+                # take the reward and dones for the last transition in the sequence
+                target_q_values = replay_data.rewards[:,-1].reshape(-1,1) + (1 - replay_data.dones[:,-1].reshape(-1,1)) * self.gamma * next_q_values
+
+            observations = pack_padded_sequence(replay_data.observations, replay_data.lengths, batch_first=True, enforce_sorted=False)
+            # Get current Q-values estimates
+            current_q_values, _ = self.q_net(observations,lstm_state)
+
+            # Retrieve the q-values for the actions from the replay buffer
+            # we only need to get the action for the last transition in the sequence
+            # select the action of the last transition
+            actions = replay_data.actions[:,-1]
+
+            current_q_values = th.gather(current_q_values, dim=1, index=actions.long())
+
+            # Compute Huber loss (less sensitive to outliers)
+            # Special case when using PrioritizedReplayBuffer (PER)
+            if isinstance(self.replay_buffer, PrioritizedReplaySequenceBuffer):
+              # TD error in absolute value
+              td_error = th.abs(current_q_values - target_q_values)
+              # Weighted Huber loss using importance sampling weights
+              loss = (replay_data.weights * th.where(td_error < 1.0, 0.5 * td_error**2, td_error - 0.5)).mean()
+              # Update priorities, they will be proportional to the td error
+              assert replay_data.leaf_nodes_indices is not None, "Node leaf node indices provided"
+              self.replay_buffer.update_priorities(
+                replay_data.leaf_nodes_indices, td_error, self._current_progress_remaining
+              )
+            else:
+              # Compute Huber loss (less sensitive to outliers)
+              loss = F.smooth_l1_loss(current_q_values, target_q_values)
+
+            losses.append(loss.item())
+
+            # Optimize the policy
+            self.policy.optimizer.zero_grad()
+            loss.backward()
+            # Clip gradient norm
+            th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+            self.policy.optimizer.step()
+
+        # Increase update counter
+        self._n_updates += gradient_steps
+
+        self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
+        self.logger.record("train/loss", np.mean(losses))
 

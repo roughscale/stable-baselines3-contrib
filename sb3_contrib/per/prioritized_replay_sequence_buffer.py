@@ -110,12 +110,14 @@ class PrioritizedReplaySequenceBuffer(ReplayPartialSequenceBuffer):
         super().add(obs, next_obs, action, reward, done, infos, lstm_states)
 
     # adapted from HER
-    def sample(self, batch_size: int, n_prev_seq: int = 10, env: Optional[VecNormalize] = None) -> ReplayBufferSamples:
+    def sample(self, batch_size: int, n_prev_seq: int = 10, env: Optional[VecNormalize] = None, use_full_episodes: bool = False) -> ReplayBufferSamples:
         """
         Sample elements from the replay buffer.
 
         :param batch_size: Number of element to sample. Not used. We only return 1 episode.
+        :param n_prev_seq: Number of previous timesteps to include (ignored if use_full_episodes=True)
         :param env: Associated VecEnv to normalize the observations/rewards when sampling
+        :param use_full_episodes: If True, return full episode history from start to sampled transition (sequential bootstrapped replay)
         :return: Samples
         """
 
@@ -163,12 +165,17 @@ class PrioritizedReplaySequenceBuffer(ReplayPartialSequenceBuffer):
 
         episode_starts = self.ep_start[batch_indices, env_indices]  # this should return a batch_size array of start pos
 
-        # now we want to return N-1 steps from the batch index
-        # N-1 as we need to include the sampled index
-        seq_start = batch_indices - (n_prev_seq - 1)
+        if use_full_episodes:
+            # Sequential bootstrapped replay: return full episode history from start to sampled transition
+            seq_starts = episode_starts
+        else:
+            # Partial sequence: return last n_prev_seq steps before sampled transition
+            # now we want to return N-1 steps from the batch index
+            # N-1 as we need to include the sampled index
+            seq_start = batch_indices - (n_prev_seq - 1)
 
-        # ensure seq_start isn't before episode start.
-        seq_starts = np.maximum(seq_start,episode_starts)
+            # ensure seq_start isn't before episode start.
+            seq_starts = np.maximum(seq_start, episode_starts)
 
         sample_idxs = []
         lengths = []

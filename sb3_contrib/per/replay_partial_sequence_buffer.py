@@ -183,21 +183,24 @@ class ReplayPartialSequenceBuffer(ReplayBuffer):
         #print(self.lstm_states[self.pos].shape)
         #self.lstm_states[self.pos] = np.array(lstm_states).copy()
 
-        # set lstm_states to zero
-        # lstm_states will be a 2 element tuple of size [D, lstm_hidden_size]
-        # the D = 1 * num_lstm_layers for unidirectoral and 2 * num_lstm_layers for bidirectional
-        # assume uni-directional
-        # we need to shape it as ndarray [ n_envs, D, 2, lstm_hidden_size ]
-        # convert tuple to ndarray
-        #print("lstm states shape")
-        #print(lstm_states[0].shape)
-        #print(lstm_states[0].reshape(-1).shape)
-        #print(np.array([lstm_states[0].reshape(-1),lstm_states[1].reshape(-1)]).shape)
-        # assuming n_env = 1. no current support for multi-env LSTM replay buffer
-        lstm_states_arr = np.array([[lstm_states[0][0], lstm_states[1][0]]])
-        # this array should match [ n_envs, D, 2, lstm_hidden_size]
-        #print(lstm_states_arr.shape)
-        self.lstm_states[self.pos] = np.array(lstm_states_arr).copy()
+        # Store LSTM states
+        # lstm_states is a tuple of (h_state, c_state) from PyTorch LSTM
+        # Input format: (num_layers, batch_size, hidden_size) for each state
+        # Storage format: (n_envs, num_layers, 2, hidden_size)
+        # where 2 represents [h_state, c_state] stacked
+
+        # Assuming n_envs = 1 (single environment, batch_size = 1)
+        # Extract states for the first (and only) environment
+        h_state = lstm_states[0][:, 0, :]  # (num_layers, hidden_size)
+        c_state = lstm_states[1][:, 0, :]  # (num_layers, hidden_size)
+
+        # Stack h and c states: (num_layers, 2, hidden_size)
+        lstm_states_stacked = np.stack([h_state, c_state], axis=1)
+
+        # Add n_envs dimension: (1, num_layers, 2, hidden_size)
+        lstm_states_arr = lstm_states_stacked[np.newaxis, ...]
+
+        self.lstm_states[self.pos] = lstm_states_arr.copy()
         # self.lstm_states should match shape of obs/new_obs
         # [ n_envs, lstm_shape ] 
 
@@ -227,12 +230,14 @@ class ReplayPartialSequenceBuffer(ReplayBuffer):
         self._current_ep_start[env_idx] = self.pos
 
     # adapted from HER
-    def sample(self, batch_size: int, n_prev_seq: int = 10, env: Optional[VecNormalize] = None) -> ReplayBufferSamples:
+    def sample(self, batch_size: int, n_prev_seq: int = 10, env: Optional[VecNormalize] = None, use_full_episodes: bool = False) -> ReplayBufferSamples:
         """
         Sample elements from the replay buffer.
 
         :param batch_size: Number of element to sample. Not used. We only return 1 episode.
+        :param n_prev_seq: Number of previous timesteps to include (ignored if use_full_episodes=True)
         :param env: Associated VecEnv to normalize the observations/rewards when sampling
+        :param use_full_episodes: If True, return full episode history from start to sampled transition (sequential bootstrapped replay)
         :return: Samples
         """
         # When the buffer is full, we rewrite on old episodes. We don't want to
@@ -271,11 +276,14 @@ class ReplayPartialSequenceBuffer(ReplayBuffer):
         #episode_lengths = self.ep_length[batch_indices, env_indices] # this should return a batch_size array of lengths
         #episode_ends = episode_starts + episode_lengths
 
-        # now we want to return N steps from the batch index
-        seq_start = batch_indices - n_prev_seq
-
-        # ensure seq_start isn't before episode start.
-        seq_starts = np.maximum(seq_start,episode_starts)
+        if use_full_episodes:
+            # Sequential bootstrapped replay: return full episode history from start to sampled transition
+            seq_starts = episode_starts
+        else:
+            # Partial sequence: return last n_prev_seq steps before sampled transition
+            seq_start = batch_indices - n_prev_seq
+            # ensure seq_start isn't before episode start.
+            seq_starts = np.maximum(seq_start, episode_starts)
 
         # debug
         #print(seq_starts)
@@ -296,12 +304,14 @@ class ReplayPartialSequenceBuffer(ReplayBuffer):
            # the following returns the entire episode
            #sample_idxs = np.arange(episode_starts[ep],episode_ends[ep]) % self.buffer_size
            #
-           # the following returns the partial episode up until transition
-           seq_idxs = np.arange(seq_starts[ep],batch_indices[ep]) % self.buffer_size
+           # the following returns the partial episode up until and INCLUDING the sampled transition
+           # Fixed: Changed batch_indices[ep] to (batch_indices[ep]+1) to include the sampled index
+           # See Issue #6 in DRQN_STABILITY_RECOMMENDATIONS.md
+           seq_idxs = np.arange(seq_starts[ep],(batch_indices[ep]+1)) % self.buffer_size
            #print(seq_idxs)
            #print("seq idxs shape")
            #print(seq_idxs.shape)
-           
+
            # edge case if sample index 0 is selected with episode starting at same position
            if len(seq_idxs) == 0:
                seq_idxs = np.array([batch_indices[ep]])
